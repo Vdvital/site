@@ -6,61 +6,362 @@
     <title>MVdesigner - Portfólio</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Firebase SDK - Adicionado para Firestore e Autenticação -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Variáveis globais (preenchidas pelo ambiente de execução)
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Inicializar Firebase
+        const firebaseApp = initializeApp(firebaseConfig);
+        const db = getFirestore(firebaseApp);
+        const auth = getAuth(firebaseApp);
+
+        let userId = null;
+        let isAuthReady = false;
+
+        // Função para mostrar mensagem customizada
+        function showMessage(message, type = 'success') {
+            const messageBox = document.getElementById('message-box');
+            messageBox.textContent = message;
+            messageBox.className = `fixed top-20 right-4 p-4 rounded-md shadow-lg z-[1000] transition-all duration-300 transform ${
+                type === 'success' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
+            } opacity-0 translate-x-full`;
+            messageBox.classList.remove('hidden');
+
+            setTimeout(() => {
+                messageBox.classList.remove('opacity-0', 'translate-x-full');
+                messageBox.classList.add('opacity-100', 'translate-x-0');
+            }, 50);
+
+            setTimeout(() => {
+                messageBox.classList.add('opacity-0', 'translate-x-full');
+                messageBox.addEventListener('transitionend', () => {
+                    messageBox.classList.add('hidden');
+                }, { once: true });
+            }, 3000);
+        }
+
+        // Autenticação Firebase
+        onAuthStateChanged(auth, async (user) => {
+            if (user) {
+                userId = user.uid;
+                console.log("Firebase Authenticated:", userId);
+                isAuthReady = true;
+                // Carregar feedbacks após a autenticação
+                loadFeedbacks();
+            } else {
+                try {
+                    // Verificação para usar custom token ou autenticação anônima
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                        userId = auth.currentUser.uid; // Obter UID após login com custom token
+                        console.log("Firebase Authenticated with Custom Token:", userId);
+                    } else {
+                        const credential = await signInAnonymously(auth);
+                        userId = credential.user.uid;
+                        console.log("Firebase Authenticated Anonymously:", userId);
+                    }
+                    isAuthReady = true;
+                    // Carregar feedbacks após a autenticação
+                    loadFeedbacks();
+                } catch (error) {
+                    console.error("Erro na autenticação:", error);
+                    showMessage('Erro de autenticação. Tente recarregar a página.', 'error');
+                }
+            }
+        });
+
+        // Função para gerar estrelas HTML
+        function generateStarRating(rating) {
+            let starsHtml = '';
+            for (let i = 0; i < 5; i++) {
+                if (i < rating) {
+                    starsHtml += '<i class="fas fa-star"></i>'; // Estrela preenchida
+                } else {
+                    starsHtml += '<i class="far fa-star"></i>'; // Estrela vazia
+                }
+            }
+            return `<div class="star-rating text-yellow-400">${starsHtml}</div>`;
+        }
+
+        // Função para carregar e exibir feedbacks do Firestore
+        async function loadFeedbacks() {
+            if (!isAuthReady || !userId) {
+                console.log("Autenticação não pronta para carregar feedbacks.");
+                return;
+            }
+
+            const feedbacksList = document.getElementById('feedbacks-list');
+            feedbacksList.innerHTML = '<p class="text-center text-gray-500 col-span-full">A carregar feedbacks...</p>'; // Loading state
+
+            // Ordenar por data de criação para mostrar os mais recentes primeiro
+            const q = query(collection(db, `artifacts/${appId}/public/data/feedbacks`), orderBy("timestamp", "desc"));
+
+            onSnapshot(q, (snapshot) => {
+                if (snapshot.empty) {
+                    feedbacksList.innerHTML = '<p class="text-center text-gray-500 col-span-full">Ainda não há feedbacks. Seja o primeiro a comentar!</p>';
+                    return;
+                }
+
+                feedbacksList.innerHTML = ''; // Limpa os feedbacks existentes
+                snapshot.forEach((doc) => {
+                    const feedback = doc.data();
+                    const feedbackItem = document.createElement('div');
+                    feedbackItem.className = 'bg-white p-6 rounded-lg shadow-md';
+                    feedbackItem.innerHTML = `
+                        <div class="flex items-center mb-4">
+                            <div>
+                                <p class="font-bold text-lg">${feedback.name || 'Anónimo'}</p>
+                                ${generateStarRating(feedback.rating || 5)}
+                            </div>
+                        </div>
+                        <p class="text-gray-700 italic">"${feedback.message || 'Sem comentário'}"</p>
+                    `;
+                    feedbacksList.appendChild(feedbackItem);
+                });
+            }, (error) => {
+                console.error("Erro ao carregar feedbacks:", error);
+                feedbacksList.innerHTML = '<p class="text-center text-red-500 col-span-full">Erro ao carregar feedbacks. Tente novamente mais tarde.</p>';
+            });
+        }
+
+        // Função para enviar feedback para o Firestore
+        async function submitFeedback(event) {
+            event.preventDefault(); // Impede o envio padrão do formulário
+
+            if (!isAuthReady || !userId) {
+                showMessage('Erro: Autenticação não concluída. Tente novamente.', 'error');
+                return;
+            }
+
+            const form = event.target;
+            const submitButton = form.querySelector('button[type="submit"]');
+            const spinner = form.querySelector('.spinner');
+            const originalButtonText = submitButton.textContent;
+
+            submitButton.disabled = true;
+            submitButton.textContent = 'A enviar...';
+            spinner.classList.remove('hidden');
+
+            const name = form.elements.name.value;
+            const email = form.elements.email.value;
+            const message = form.elements.message.value;
+            const ratingInput = form.querySelector('input[name="rating"]:checked');
+            const rating = ratingInput ? parseInt(ratingInput.value) : 0; // Captura a avaliação das estrelas
+
+            if (rating === 0) {
+                showMessage('Por favor, selecione uma avaliação em estrelas.', 'error');
+                submitButton.disabled = false;
+                submitButton.textContent = originalButtonText;
+                spinner.classList.add('hidden');
+                return;
+            }
+
+
+            try {
+                // Adiciona o feedback à coleção 'feedbacks'
+                await addDoc(collection(db, `artifacts/${appId}/public/data/feedbacks`), {
+                    name: name,
+                    email: email,
+                    message: message,
+                    rating: rating,
+                    timestamp: new Date() // Adiciona um timestamp para ordenação
+                });
+                showMessage('Obrigado pelo seu feedback! Ele aparecerá em breve.', 'success');
+                form.reset();
+                // Reset the star rating visual after form submission
+                const stars = form.querySelectorAll('.star-rating-input input');
+                stars.forEach(star => star.checked = false);
+            } catch (e) {
+                console.error("Erro ao adicionar documento: ", e);
+                showMessage('Erro ao enviar feedback. Tente novamente.', 'error');
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = originalButtonText;
+                spinner.classList.add('hidden');
+            }
+        }
+
+        // Adiciona o listener para o formulário de feedback (executado após o DOM carregar)
+        document.addEventListener('DOMContentLoaded', () => {
+            const feedbackForm = document.getElementById('feedback-form');
+            if (feedbackForm) {
+                feedbackForm.addEventListener('submit', submitFeedback);
+
+                // Add event listeners for star rating interaction
+                const stars = feedbackForm.querySelectorAll('.star-rating-input label');
+                stars.forEach(star => {
+                    star.addEventListener('click', function() {
+                        const value = parseInt(this.getAttribute('data-value'));
+                        feedbackForm.querySelectorAll('.star-rating-input label').forEach(s => {
+                            const sValue = parseInt(s.getAttribute('data-value'));
+                            if (sValue <= value) {
+                                s.querySelector('i').classList.remove('far');
+                                s.querySelector('i').classList.add('fas');
+                            } else {
+                                s.querySelector('i').classList.remove('fas');
+                                s.querySelector('i').classList.add('far');
+                            }
+                        });
+                    });
+                });
+            }
+
+            // Contact Form: Ajustado para usar showMessage em vez de alert
+            // O formulário de contato foi removido, então este evento não é mais necessário
+            // const contactForm = document.getElementById('contact-form');
+            // contactForm.addEventListener('submit', (e) => {
+            //     e.preventDefault();
+            //     showMessage('Obrigado pelo seu contato! Retornaremos em breve.', 'success');
+            //     contactForm.reset();
+            // });
+
+            // Geração de Descrição (Gemini API) - Mantido
+            async function generateProjectDescription(projectId, projectTitle) {
+                const button = document.getElementById(`generate-desc-${projectId}`);
+                const buttonText = document.getElementById(`generate-desc-text-${projectId}`);
+                const spinner = document.getElementById(`generate-desc-spinner-${projectId}`);
+                const textarea = document.getElementById(`generated-description-${projectId}`);
+
+                button.disabled = true;
+                buttonText.textContent = 'A gerar...';
+                spinner.classList.remove('hidden');
+                textarea.value = ''; // Limpa texto anterior
+
+                const prompt = `Gere uma descrição de projeto profissional e criativa para um portfólio de design. O projeto se chama '${projectTitle}'. Inclua detalhes sobre o objetivo do projeto, o processo de design e o impacto no cliente, em português.`;
+
+                let chatHistory = [];
+                chatHistory.push({ role: "user", parts: [{ text: prompt }] });
+                const payload = { contents: chatHistory };
+                const apiKey = ""; // Deixe como está. O ambiente fornecerá a chave.
+                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const result = await response.json();
+
+                    if (result.candidates && result.candidates.length > 0 &&
+                        result.candidates[0].content && result.candidates[0].content.parts &&
+                        result.candidates[0].content.parts.length > 0) {
+                        const text = result.candidates[0].content.parts[0].text;
+                        textarea.value = text;
+                    } else {
+                        textarea.value = 'Erro ao gerar descrição. Tente novamente.';
+                        console.error('Estrutura de resposta inesperada da API Gemini:', result);
+                    }
+                } catch (error) {
+                    textarea.value = 'Erro na conexão com a IA. Verifique a sua rede.';
+                    console.error('Erro ao chamar a API Gemini:', error);
+                } finally {
+                    button.disabled = false;
+                    buttonText.textContent = 'Gerar Descrição';
+                    spinner.classList.add('hidden');
+                }
+            }
+
+            // Anexar event listeners aos botões dentro dos modais
+            const project1Button = document.getElementById('generate-desc-projeto1');
+            const project1Title = document.getElementById('projeto1-title').textContent;
+            if (project1Button) {
+                project1Button.addEventListener('click', () => generateProjectDescription('projeto1', project1Title));
+            }
+
+            const project2Button = document.getElementById('generate-desc-projeto2');
+            const project2Title = document.getElementById('projeto2-title').textContent;
+            if (project2Button) {
+                project2Button.addEventListener('click', () => generateProjectDescription('projeto2', project2Title));
+            }
+
+            const project3Button = document.getElementById('generate-desc-projeto3');
+            const project3Title = document.getElementById('projeto3-title').textContent;
+            if (project3Button) {
+                project3Button.addEventListener('click', () => generateProjectDescription('projeto3', project3Title));
+            }
+        });
+    </script>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&display=swap');
-        
-        body {
-            font-family: 'Montserrat', sans-serif;
-            scroll-behavior: smooth;
+        /* Resto do CSS original */
+        .star-rating .fas.fa-star {
+            color: #FFD700;
         }
-        
-        .portfolio-item {
-            transition: all 0.3s ease;
+        .star-rating .far.fa-star {
+            color: #d1d5db;
         }
-        
-        .portfolio-item:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #3498db;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
         }
-        
-        .nav-link {
-            position: relative;
+
+        @keyframes spin {
+            to {
+                transform: rotate(360deg);
+            }
         }
-        
-        .nav-link::after {
-            content: '';
-            position: absolute;
-            width: 0;
-            height: 2px;
-            bottom: -2px;
-            left: 0;
-            background-color: #000;
-            transition: width 0.3s ease;
+        /* New styles for star rating input */
+        .star-rating-input {
+            display: flex;
+            justify-content: center;
+            direction: rtl; /* Stars from right to left */
         }
-        
-        .nav-link:hover::after {
-            width: 100%;
+        .star-rating-input input[type="radio"] {
+            display: none; /* Hide radio buttons */
         }
-        
-        .modal {
-            transition: opacity 0.3s ease;
+        .star-rating-input label {
+            cursor: pointer;
+            width: 30px;
+            height: 30px;
+            color: #d1d5db; /* Default empty star color */
+            font-size: 28px;
+            transition: color 0.2s ease;
+        }
+        .star-rating-input label i {
+            pointer-events: none; /* Allows click to pass through to label */
+        }
+        .star-rating-input input[type="radio"]:checked ~ label,
+        .star-rating-input label:hover,
+        .star-rating-input label:hover ~ label {
+            color: #FFD700; /* Gold color on hover and checked */
+        }
+        /* Ensure Font Awesome is loaded for stars */
+        .star-rating-input label i.fas { /* Already filled star */
+            color: #FFD700;
+        }
+        .star-rating-input label i.far { /* Empty star */
+            color: #d1d5db;
         }
     </style>
 </head>
 <body class="bg-white text-gray-900">
+    <!-- Message Box for alerts -->
+    <div id="message-box" class="fixed top-20 right-4 p-4 rounded-md shadow-lg z-[1000] hidden"></div>
+
     <!-- Header -->
     <header class="fixed w-full bg-white z-50 shadow-sm">
         <div class="container mx-auto px-4 py-4 flex justify-between items-center">
             <div class="flex items-center">
-                <!-- LOCAL PARA LOGO: Você pode adicionar um logo aqui -->
-                <!--img src="/Imagem/Logo mvdesign.svg" alt="MVdesigner Logo" class="h-10 mr-2">-->
+                <!-- Removida a tag <img> para o logo, usando apenas o texto -->
                 <h1 class="text-2xl font-bold tracking-tighter">MV<span class="font-light">designer</span></h1>
             </div>
             <nav class="hidden md:flex space-x-8">
-                <a href="#home" class="nav-link font-medium">inicio</a>
+                <a href="#home" class="nav-link font-medium">Home</a>
                 <a href="#services" class="nav-link font-medium">Serviços</a>
                 <a href="#portfolio" class="nav-link font-medium">Portfólio</a>
                 <a href="#about" class="nav-link font-medium">Sobre</a>
+                <a href="#testimonials" class="nav-link font-medium">Feedbacks</a>
                 <a href="#contact" class="nav-link font-medium">Contato</a>
             </nav>
             <button id="mobile-menu-button" class="md:hidden focus:outline-none">
@@ -72,10 +373,11 @@
         <!-- Mobile Menu -->
         <div id="mobile-menu" class="hidden md:hidden bg-white w-full border-t border-gray-200">
             <div class="container mx-auto px-4 py-2 flex flex-col space-y-3">
-                <a href="#home" class="py-2 font-medium">inicio</a>
+                <a href="#home" class="py-2 font-medium">Home</a>
                 <a href="#services" class="py-2 font-medium">Serviços</a>
                 <a href="#portfolio" class="py-2 font-medium">Portfólio</a>
                 <a href="#about" class="py-2 font-medium">Sobre</a>
+                <a href="#testimonials" class="py-2 font-medium">Feedbacks</a>
                 <a href="#contact" class="py-2 font-medium">Contato</a>
             </div>
         </div>
@@ -86,7 +388,7 @@
         <div class="container mx-auto px-4">
             <div class="flex flex-col md:flex-row items-center">
                 <div class="md:w-1/2 mb-8 md:mb-0">
-                    <h2 class="text-4xl md:text-5xl font-bold mb-4 leading-tight">Design que <br>transforma <span class="text-gray-600">ideias</span> em <span class="text-gray-600">realidade</span></h2>
+                    <h2 class="text-4xl md:text-5xl font-bold mb-4 leading-tight">Design que <br>transforma <span class="text-gray-600">ideias</span> em <span class="text-600">realidade</span></h2>
                     <p class="text-lg text-gray-700 mb-8">Marketing, Design, Fotografia de produtos e criação de embalagens e catálogos profissionais.</p>
                     <div class="flex space-x-4">
                         <a href="#portfolio" class="px-6 py-3 bg-black text-white font-medium rounded-md hover:bg-gray-800 transition">Ver Portfólio</a>
@@ -94,14 +396,8 @@
                     </div>
                 </div>
                 <div class="md:w-1/2">
-                    <!-- LOCAL PARA IMAGEM HERO: Adicione sua imagem principal aqui -->
-                    <!-- <img src="caminho-para-imagem-hero.jpg" alt="Design Profissional" class="w-full h-auto rounded-lg shadow-lg"> -->
-                    
-                    <!-- Placeholder SVG (substitua por sua imagem) -->
-                    <svg class="w-full h-auto rounded-lg shadow-lg bg-gray-100" height="400" viewBox="0 0 600 400" xmlns="http://www.w3.org/2000/svg">
-                        <rect width="100%" height="100%" fill="#f3f4f6"/>
-                        <text x="50%" y="50%" font-size="24" text-anchor="middle" fill="#9ca3af">Imagem Hero</text>
-                    </svg>
+                    <!-- Imagem para a seção Hero -->
+                    <img src="https://cdn.discordapp.com/attachments/1186109058458071077/1380220081895772282/3656.png?ex=6843159e&is=6841c41e&hm=fc5b5409d33ee79eeaec5f9f73e64ec5f80f86286770abbfdff1bdb615c510c9&" alt="[Image of mesa de trabalho com objetos de design]" class="w-full h-auto rounded-lg shadow-lg" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=IMAGEM+HERO+NAO+CARREGADA';">
                 </div>
             </div>
         </div>
@@ -115,31 +411,28 @@
                 <p class="text-gray-600 max-w-2xl mx-auto">Oferecemos soluções completas de design para transformar sua marca e destacá-la no mercado.</p>
             </div>
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                <!-- Serviço 1 -->
+                <!-- Serviço 1: Design Gráfico -->
                 <div class="bg-white p-6 rounded-lg shadow-md">
-                    <!-- LOCAL PARA ÍCONE: Adicione um ícone ou imagem pequena aqui -->
                     <div class="mb-4 text-center">
-                        <i class="fas fa-paint-brush text-4xl text-gray-700"></i>
+                        <i class="fas fa-palette text-gray-800 text-5xl"></i> <!-- Ícone de paleta para Design Gráfico -->
                     </div>
                     <h3 class="text-xl font-bold mb-3 text-center">Design Gráfico</h3>
                     <p class="text-gray-600 text-center">Criação de identidade visual, logotipos, cartões de visita e materiais promocionais para sua marca.</p>
                 </div>
-                
-                <!-- Serviço 2 -->
+
+                <!-- Serviço 2: Fotografia de Produtos -->
                 <div class="bg-white p-6 rounded-lg shadow-md">
-                    <!-- LOCAL PARA ÍCONE: Adicione um ícone ou imagem pequena aqui -->
                     <div class="mb-4 text-center">
-                        <i class="fas fa-camera text-4xl text-gray-700"></i>
+                        <i class="fas fa-camera-retro text-gray-800 text-5xl"></i> <!-- Ícone de câmera para Fotografia de Produtos -->
                     </div>
                     <h3 class="text-xl font-bold mb-3 text-center">Fotografia de Produtos</h3>
                     <p class="text-gray-600 text-center">Fotografias profissionais que destacam os melhores aspectos dos seus produtos para e-commerce e catálogos.</p>
                 </div>
-                
-                <!-- Serviço 3 -->
+
+                <!-- Serviço 3: Design de Embalagens -->
                 <div class="bg-white p-6 rounded-lg shadow-md">
-                    <!-- LOCAL PARA ÍCONE: Adicione um ícone ou imagem pequena aqui -->
                     <div class="mb-4 text-center">
-                        <i class="fas fa-box-open text-4xl text-gray-700"></i>
+                        <i class="fas fa-box-open text-gray-800 text-5xl"></i> <!-- Ícone de caixa aberta para Design de Embalagens -->
                     </div>
                     <h3 class="text-xl font-bold mb-3 text-center">Design de Embalagens</h3>
                     <p class="text-gray-600 text-center">Criação de embalagens atrativas e funcionais que comunicam os valores da sua marca.</p>
@@ -155,60 +448,36 @@
                 <h2 class="text-3xl font-bold mb-4">Portfólio</h2>
                 <p class="text-gray-600 max-w-2xl mx-auto">Conheça alguns dos nossos trabalhos recentes e veja como podemos ajudar a sua marca.</p>
             </div>
-            
+
             <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <!-- Projeto 1 -->
+                <!-- Projeto 1: Redesign de Marca -->
                 <div class="portfolio-item overflow-hidden rounded-lg shadow-md cursor-pointer" onclick="openModal('projeto1')">
-                    <!-- LOCAL PARA IMAGEM DE PORTFÓLIO: Adicione imagem do projeto aqui -->
-                    <!-- <img src="caminho-para-imagem-projeto1.jpg" alt="Projeto 1" class="w-full h-64 object-cover"> -->
-                    
-                    <!-- Placeholder SVG (substitua por sua imagem) -->
-                    <svg class="w-full h-64 bg-gray-200" viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg">
-                        <rect width="100%" height="100%" fill="#e5e7eb"/>
-                        <text x="50%" y="50%" font-size="18" text-anchor="middle" fill="#9ca3af">Imagem Projeto 1</text>
-                    </svg>
-                    
+                    <img src="https://www.chiefofdesign.com.br/wp-content/uploads/2020/01/shutterstock_530963695.png" alt="Redesign de Marca" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=IMAGEM+NAO+CARREGADA';">
                     <div class="p-4">
                         <h3 class="font-bold text-lg mb-1">Redesign de Marca</h3>
                         <p class="text-gray-600">Identidade Visual</p>
                     </div>
                 </div>
-                
-                <!-- Projeto 2 -->
+
+                <!-- Projeto 2: Catálogo de Produtos -->
                 <div class="portfolio-item overflow-hidden rounded-lg shadow-md cursor-pointer" onclick="openModal('projeto2')">
-                    <!-- LOCAL PARA IMAGEM DE PORTFÓLIO: Adicione imagem do projeto aqui -->
-                    <!-- <img src="caminho-para-imagem-projeto2.jpg" alt="Projeto 2" class="w-full h-64 object-cover"> -->
-                    
-                    <!-- Placeholder SVG (substitua por sua imagem) -->
-                    <svg class="w-full h-64 bg-gray-200" viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg">
-                        <rect width="100%" height="100%" fill="#e5e7eb"/>
-                        <text x="50%" y="50%" font-size="18" text-anchor="middle" fill="#9ca3af">Imagem Projeto 2</text>
-                    </svg>
-                    
+                    <img src="https://aprdesigners.com.br/wp-content/uploads/photo-gallery/catalogos/criacao-de-catalogo-de-autopecas-iguacu.jpg?bwg=1540586308" alt="Catálogo de Produtos" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=CATALOGO+NAO+CARREGADA';">
                     <div class="p-4">
                         <h3 class="font-bold text-lg mb-1">Catálogo de Produtos</h3>
                         <p class="text-gray-600">Design Editorial</p>
                     </div>
                 </div>
-                
-                <!-- Projeto 3 -->
+
+                <!-- Projeto 3: Embalagem Premium -->
                 <div class="portfolio-item overflow-hidden rounded-lg shadow-md cursor-pointer" onclick="openModal('projeto3')">
-                    <!-- LOCAL PARA IMAGEM DE PORTFÓLIO: Adicione imagem do projeto aqui -->
-                    <!-- <img src="caminho-para-imagem-projeto3.jpg" alt="Projeto 3" class="w-full h-64 object-cover"> -->
-                    
-                    <!-- Placeholder SVG (substitua por sua imagem) -->
-                    <svg class="w-full h-64 bg-gray-200" viewBox="0 0 400 300" xmlns="http://www.w3.org/2000/svg">
-                        <rect width="100%" height="100%" fill="#e5e7eb"/>
-                        <text x="50%" y="50%" font-size="18" text-anchor="middle" fill="#9ca3af">Imagem Projeto 3</text>
-                    </svg>
-                    
+                    <img src="https://ptcgs.com.br/wp-content/uploads/2023/01/embalagens-1080x675.jpg" alt="Embalagem Premium" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=EMBALAGEM+NAO+CARREGADA';">
                     <div class="p-4">
                         <h3 class="font-bold text-lg mb-1">Embalagem Premium</h3>
                         <p class="text-gray-600">Design de Embalagem</p>
                     </div>
                 </div>
             </div>
-            
+
             <div class="text-center mt-10">
                 <a href="#contact" class="px-6 py-3 bg-black text-white font-medium rounded-md hover:bg-gray-800 transition">Solicite um Orçamento</a>
             </div>
@@ -220,14 +489,8 @@
         <div class="container mx-auto px-4">
             <div class="flex flex-col md:flex-row items-center">
                 <div class="md:w-1/2 mb-8 md:mb-0 md:pr-8">
-                    <!-- LOCAL PARA IMAGEM SOBRE: Adicione uma imagem sua ou da equipe aqui -->
-                    <!-- <img src="caminho-para-imagem-sobre.jpg" alt="Sobre MVdesigner" class="w-full h-auto rounded-lg shadow-lg"> -->
-                    
-                    <!-- Placeholder SVG (substitua por sua imagem) -->
-                    <svg class="w-full h-auto rounded-lg shadow-lg bg-gray-100" height="400" viewBox="0 0 600 400" xmlns="http://www.w3.org/2000/svg">
-                        <rect width="100%" height="100%" fill="#f3f4f6"/>
-                        <text x="50%" y="50%" font-size="24" text-anchor="middle" fill="#9ca3af">Imagem Sobre</text>
-                    </svg>
+                    <!-- Imagem para a seção Sobre -->
+                    <img src="https://cdn.discordapp.com/attachments/1186109058458071077/1380216951686828093/Imagem_do_WhatsApp_de_2025-06-04_as_21.43.20_dbe9b3ee.jpg?ex=684312b4&is=6841c134&hm=e69ac04acd1e15b08f107d25b204135744ed85fbb47e6216c5660b71aaba6dd6&" alt="[Image of um profissional trabalhando em design]" class="w-full h-auto rounded-lg shadow-lg" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=IMAGEM+SOBRE+NAO+CARREGADA';">
                 </div>
                 <div class="md:w-1/2">
                     <h2 class="text-3xl font-bold mb-6">Sobre MVdesigner</h2>
@@ -243,6 +506,67 @@
         </div>
     </section>
 
+    <!-- Testimonials Section -->
+    <section id="testimonials" class="py-16">
+        <div class="container mx-auto px-4">
+            <div class="text-center mb-16">
+                <h2 class="text-3xl font-bold mb-4">O que nossos clientes dizem</h2>
+                <p class="text-gray-600 max-w-2xl mx-auto">Confira alguns depoimentos de clientes satisfeitos com nosso trabalho.</p>
+            </div>
+
+            <!-- Feedbacks List - Populated by JavaScript from Firestore -->
+            <div id="feedbacks-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <!-- Initial loading state -->
+                <p class="text-center text-gray-500 col-span-full">A carregar feedbacks...</p>
+                <!-- Feedbacks will be dynamically added here -->
+            </div>
+
+            <!-- Feedback Submission Form -->
+            <div class="text-center mt-20 p-8 bg-gray-100 rounded-lg shadow-inner max-w-2xl mx-auto">
+                <h3 class="text-2xl font-bold mb-4">Deixe seu Feedback!</h3>
+                <p class="text-gray-700 mb-6">Sua opinião é muito importante para nós. Compartilhe sua experiência!</p>
+                <form id="feedback-form" class="space-y-4 text-left">
+                    <div>
+                        <label for="feedback_name" class="block text-sm font-medium text-gray-700 mb-1">Seu Nome:</label>
+                        <input type="text" id="feedback_name" name="name" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-500" required>
+                    </div>
+                    <div>
+                        <label for="feedback_email" class="block text-sm font-medium text-gray-700 mb-1">Seu Email:</label>
+                        <input type="email" id="feedback_email" name="email" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-500" required>
+                    </div>
+
+                    <!-- Seleção de Estrelas -->
+                    <div class="mb-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2 text-center">Sua Avaliação:</label>
+                        <div class="star-rating-input">
+                            <input type="radio" id="star5" name="rating" value="5" required>
+                            <label for="star5" data-value="5"><i class="fas fa-star"></i></label>
+                            <input type="radio" id="star4" name="rating" value="4">
+                            <label for="star4" data-value="4"><i class="fas fa-star"></i></label>
+                            <input type="radio" id="star3" name="rating" value="3">
+                            <label for="star3" data-value="3"><i class="fas fa-star"></i></label>
+                            <input type="radio" id="star2" name="rating" value="2">
+                            <label for="star2" data-value="2"><i class="fas fa-star"></i></label>
+                            <input type="radio" id="star1" name="rating" value="1">
+                            <label for="star1" data-value="1"><i class="fas fa-star"></i></label>
+                        </div>
+                    </div>
+
+                    <div>
+                        <label for="feedback_message" class="block text-sm font-medium text-gray-700 mb-1">Seu Comentário:</label>
+                        <textarea id="feedback_message" name="message" rows="4" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-500" required></textarea>
+                    </div>
+                    <div>
+                        <button type="submit" class="w-full px-6 py-3 bg-black text-white font-medium rounded-md hover:bg-gray-800 transition flex items-center justify-center space-x-2">
+                            <span id="feedback-button-text">Enviar Feedback</span>
+                            <div id="feedback-spinner" class="spinner hidden"></div>
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </section>
+
     <!-- Contact Section -->
     <section id="contact" class="py-16">
         <div class="container mx-auto px-4">
@@ -250,7 +574,7 @@
                 <h2 class="text-3xl font-bold mb-4">Entre em Contato</h2>
                 <p class="text-gray-600 max-w-2xl mx-auto">Vamos conversar sobre o seu projeto e como podemos ajudar a transformar suas ideias em realidade.</p>
             </div>
-            
+
             <div class="max-w-4xl mx-auto">
                 <div class="flex flex-col md:flex-row bg-white rounded-lg shadow-lg overflow-hidden">
                     <div class="md:w-1/3 bg-gray-900 text-white p-8">
@@ -258,7 +582,7 @@
                         <div class="mb-6">
                             <p class="flex items-center mb-3">
                                 <i class="fas fa-map-marker-alt mr-3"></i>
-                                 São Paulo - SP
+                                São Paulo - SP
                             </p>
                             <p class="flex items-center mb-3">
                                 <i class="fas fa-envelope mr-3"></i>
@@ -270,35 +594,17 @@
                             </p>
                         </div>
                         <div class="flex space-x-4 mt-8">
-                            <a href="#" class="text-white hover:text-gray-300"><i class="fab fa-instagram"></i></a>
-                            <a href="#" class="text-white hover:text-gray-300"><i class="fab fa-behance"></i></a>
-                            <a href="#" class="text-white hover:text-gray-300"><i class="fab fa-linkedin"></i></a>
+                            <a href="https://www.instagram.com/mvital_designer/following/" target="_blank" class="text-white hover:text-gray-300"><i class="fab fa-instagram"></i></a>
+                            <a href="https://www.behance.net/vDvital" target="_blank" class="text-white hover:text-gray-300"><i class="fab fa-behance"></i></a>
+                            <a href="https://www.linkedin.com/in/marcos-vital-terto-64143b218/" target="_blank" class="text-white hover:text-gray-300"><i class="fab fa-linkedin"></i></a>
                         </div>
                     </div>
-                    <div class="md:w-2/3 p-8">
-                        <form id="contact-form" class="space-y-4">
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label for="name" class="block text-sm font-medium text-gray-700 mb-1">Nome</label>
-                                    <input type="text" id="name" name="name" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-500" required>
-                                </div>
-                                <div>
-                                    <label for="email" class="block text-sm font-medium text-gray-700 mb-1">Email</label>
-                                    <input type="email" id="email" name="email" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-500" required>
-                                </div>
-                            </div>
-                            <div>
-                                <label for="subject" class="block text-sm font-medium text-gray-700 mb-1">Assunto</label>
-                                <input type="text" id="subject" name="subject" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-500" required>
-                            </div>
-                            <div>
-                                <label for="message" class="block text-sm font-medium text-gray-700 mb-1">Mensagem</label>
-                                <textarea id="message" name="message" rows="4" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-500" required></textarea>
-                            </div>
-                            <div>
-                                <button type="submit" class="w-full px-6 py-3 bg-black text-white font-medium rounded-md hover:bg-gray-800 transition">Enviar Mensagem</button>
-                            </div>
-                        </form>
+                    <div class="md:w-2/3 p-8 flex flex-col justify-center items-center text-center">
+                        <p class="text-gray-700 mb-6 text-lg">Para um contato rápido, clique no botão abaixo para nos enviar uma mensagem via WhatsApp:</p>
+                        <a href="https://wa.me/5511993975886?text=Ol%C3%A1%2C%20gostaria%20de%20conversar%20sobre%20um%20projeto." target="_blank" class="px-8 py-4 bg-green-500 text-white font-medium rounded-full shadow-lg hover:bg-green-600 transition flex items-center justify-center space-x-3 text-lg">
+                            <i class="fab fa-whatsapp text-2xl"></i>
+                            <span>Enviar Mensagem via WhatsApp</span>
+                        </a>
                     </div>
                 </div>
             </div>
@@ -317,10 +623,11 @@
                     <div>
                         <h4 class="text-lg font-semibold mb-4">Links Rápidos</h4>
                         <ul class="space-y-2">
-                            <li><a href="#home" class="text-gray-400 hover:text-white transition">inicio</a></li>
+                            <li><a href="#home" class="text-gray-400 hover:text-white transition">Home</a></li>
                             <li><a href="#services" class="text-gray-400 hover:text-white transition">Serviços</a></li>
                             <li><a href="#portfolio" class="text-gray-400 hover:text-white transition">Portfólio</a></li>
                             <li><a href="#about" class="text-gray-400 hover:text-white transition">Sobre</a></li>
+                            <li><a href="#testimonials" class="text-gray-400 hover:text-white transition">Feedbacks</a></li>
                             <li><a href="#contact" class="text-gray-400 hover:text-white transition">Contato</a></li>
                         </ul>
                     </div>
@@ -337,12 +644,12 @@
                     <div>
                         <h4 class="text-lg font-semibold mb-4">Contato</h4>
                         <ul class="space-y-2">
-                            <li class="text-gray-400">contato@mvdesigner.com.br</li>
-                            <li class="text-gray-400">(11) 99999-9999</li>
+                            <li class="text-gray-400">marcos.vital2008@outlook.com</li>
+                            <li class="text-gray-400">(11) 99397-5886 (WhatsApp)</li>
                             <li class="flex space-x-4 mt-4">
-                                <a href="#" class="text-gray-400 hover:text-white transition"><i class="fab fa-instagram"></i></a>
-                                <a href="#" class="text-gray-400 hover:text-white transition"><i class="fab fa-behance"></i></a>
-                                <a href="#" class="text-gray-400 hover:text-white transition"><i class="fab fa-linkedin"></i></a>
+                                <a href="https://www.instagram.com/mvital_designer/following/" target="_blank" class="text-gray-400 hover:text-white transition"><i class="fab fa-instagram"></i></a>
+                                <a href="https://www.behance.net/vDvital" target="_blank" class="text-gray-400 hover:text-white transition"><i class="fab fa-behance"></i></a>
+                                <a href="https://www.linkedin.com/in/marcos-vital-terto-64143b218/" target="_blank" class="text-gray-400 hover:text-white transition"><i class="fab fa-linkedin"></i></a>
                             </li>
                         </ul>
                     </div>
@@ -354,38 +661,41 @@
         </div>
     </footer>
 
-    <!-- Modais de Portfólio -->
+    <!-- Portfolio Modals -->
     <div id="modal-projeto1" class="modal fixed inset-0 z-50 flex items-center justify-center hidden">
         <div class="modal-overlay absolute inset-0 bg-black opacity-75"></div>
         <div class="modal-container bg-white w-11/12 md:max-w-3xl mx-auto rounded-lg shadow-lg z-50 overflow-y-auto">
             <div class="modal-content p-6">
                 <div class="flex justify-between items-center mb-6">
-                    <h3 class="text-2xl font-bold">Redesign de Marca</h3>
+                    <h3 class="text-2xl font-bold" id="projeto1-title">Redesign de Marca</h3>
                     <button class="modal-close focus:outline-none">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
                     </button>
                 </div>
-                <!-- LOCAL PARA IMAGEM DE PROJETO GRANDE: Adicione imagem grande do projeto aqui -->
-                <!-- <img src="caminho-para-imagem-projeto1-grande.jpg" alt="Projeto 1" class="w-full h-auto mb-6 rounded-lg"> -->
-                
-                <!-- Placeholder SVG (substitua por sua imagem) -->
-                <svg class="w-full h-auto mb-6 rounded-lg bg-gray-200" height="400" viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg">
-                    <rect width="100%" height="100%" fill="#e5e7eb"/>
-                    <text x="50%" y="50%" font-size="24" text-anchor="middle" fill="#9ca3af">Imagem Grande Projeto 1</text>
-                </svg>
-                
-                <p class="text-gray-700 mb-4">Redesign completo da identidade visual para a empresa XYZ, incluindo logotipo, paleta de cores, tipografia e aplicações em diversos materiais.</p>
-                <p class="text-gray-700 mb-4">O objetivo era modernizar a marca mantendo sua essência e valores, criando uma identidade mais versátil e adaptável às diferentes mídias digitais.</p>
+                <!-- Imagem grande para o Projeto 1: Redesign de Marca -->
+                <img src="https://www.chiefofdesign.com.br/wp-content/uploads/2020/01/shutterstock_530963695.png" alt="Redesign de Marca" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/800x600/cccccc/000000?text=IMAGEM+NAO+CARREGADA';">
+
+                <p class="text-gray-700 mb-4">Complete redesign of the visual identity for XYZ company, including logo, color palette, typography and application in various materials.</p>
+                <p class="text-700 mb-4">The goal was to modernize the brand while maintaining its essence and values, creating a more versatile identity adaptable to different digital media.</p>
                 <div class="mt-6">
-                    <h4 class="font-bold mb-2">Serviços realizados:</h4>
+                    <h4 class="font-bold mb-2">Services performed:</h4>
                     <ul class="list-disc pl-5 text-gray-700">
-                        <li>Redesign de logotipo</li>
-                        <li>Manual de identidade visual</li>
-                        <li>Papelaria corporativa</li>
-                        <li>Templates para redes sociais</li>
+                        <li>Logo redesign</li>
+                        <li>Visual identity manual</li>
+                        <li>Corporate stationery</li>
+                        <li>Social media templates</li>
                     </ul>
+                </div>
+                <!-- Gemini API Integration: Project Description Generator -->
+                <div class="mt-8 pt-6 border-t border-gray-200">
+                    <h4 class="font-bold text-xl mb-4">Gerador de Descrição de Projeto ✨</h4>
+                    <button id="generate-desc-projeto1" class="px-6 py-3 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 transition flex items-center justify-center space-x-2">
+                        <span id="generate-desc-text-projeto1">Gerar Descrição</span>
+                        <div id="generate-desc-spinner-projeto1" class="spinner hidden"></div>
+                    </button>
+                    <textarea id="generated-description-projeto1" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mt-4 h-32" placeholder="A descrição gerada pela IA aparecerá aqui..." readonly></textarea>
                 </div>
             </div>
         </div>
@@ -396,32 +706,35 @@
         <div class="modal-container bg-white w-11/12 md:max-w-3xl mx-auto rounded-lg shadow-lg z-50 overflow-y-auto">
             <div class="modal-content p-6">
                 <div class="flex justify-between items-center mb-6">
-                    <h3 class="text-2xl font-bold">Catálogo de Produtos</h3>
+                    <h3 class="text-2xl font-bold" id="projeto2-title">Catálogo de Produtos</h3>
                     <button class="modal-close focus:outline-none">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
                     </button>
                 </div>
-                <!-- LOCAL PARA IMAGEM DE PROJETO GRANDE: Adicione imagem grande do projeto aqui -->
-                <!-- <img src="caminho-para-imagem-projeto2-grande.jpg" alt="Projeto 2" class="w-full h-auto mb-6 rounded-lg"> -->
-                
-                <!-- Placeholder SVG (substitua por sua imagem) -->
-                <svg class="w-full h-auto mb-6 rounded-lg bg-gray-200" height="400" viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg">
-                    <rect width="100%" height="100%" fill="#e5e7eb"/>
-                    <text x="50%" y="50%" font-size="24" text-anchor="middle" fill="#9ca3af">Imagem Grande Projeto 2</text>
-                </svg>
-                
-                <p class="text-gray-700 mb-4">Desenvolvimento de catálogo de produtos para a empresa ABC, com fotografia profissional, diagramação e design editorial completo.</p>
-                <p class="text-gray-700 mb-4">O catálogo foi criado para destacar os produtos de forma elegante e informativa, facilitando a consulta pelos clientes e representantes comerciais.</p>
+                <!-- Imagem grande para o Projeto 2: Catálogo de Produtos -->
+                <img src="https://aprdesigners.com.br/wp-content/uploads/photo-gallery/catalogos/criacao-de-catalogo-de-autopecas-iguacu.jpg?bwg=1540586308" alt="Catálogo de Produtos" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/800x600/cccccc/000000?text=CATALOGO+NAO+CARREGADA';">
+
+                <p class="text-gray-700 mb-4">Development of product catalog for ABC company, with professional photography, layout and complete editorial design.</p>
+                <p class="text-gray-700 mb-4">The catalog was created to highlight products elegantly and informatively, facilitating consultation by customers and sales representatives.</p>
                 <div class="mt-6">
-                    <h4 class="font-bold mb-2">Serviços realizados:</h4>
+                    <h4 class="font-bold mb-2">Services performed:</h4>
                     <ul class="list-disc pl-5 text-gray-700">
-                        <li>Fotografia de produtos</li>
-                        <li>Diagramação</li>
-                        <li>Design editorial</li>
-                        <li>Preparação para impressão</li>
+                        <li>Product photography</li>
+                        <li>Layout</li>
+                        <li>Editorial design</li>
+                        <li>Preparation for printing</li>
                     </ul>
+                </div>
+                <!-- Gemini API Integration: Project Description Generator -->
+                <div class="mt-8 pt-6 border-t border-gray-200">
+                    <h4 class="font-bold text-xl mb-4">Gerador de Descrição de Projeto ✨</h4>
+                    <button id="generate-desc-projeto2" class="px-6 py-3 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 transition flex items-center justify-center space-x-2">
+                        <span id="generate-desc-text-projeto2">Gerar Descrição</span>
+                        <div id="generate-desc-spinner-projeto2" class="spinner hidden"></div>
+                    </button>
+                    <textarea id="generated-description-projeto2" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mt-4 h-32" placeholder="A descrição gerada pela IA aparecerá aqui..." readonly></textarea>
                 </div>
             </div>
         </div>
@@ -432,84 +745,38 @@
         <div class="modal-container bg-white w-11/12 md:max-w-3xl mx-auto rounded-lg shadow-lg z-50 overflow-y-auto">
             <div class="modal-content p-6">
                 <div class="flex justify-between items-center mb-6">
-                    <h3 class="text-2xl font-bold">Embalagem Premium</h3>
+                    <h3 class="text-2xl font-bold" id="projeto3-title">Embalagem Premium</h3>
                     <button class="modal-close focus:outline-none">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
                         </svg>
                     </button>
                 </div>
-                <!-- LOCAL PARA IMAGEM DE PROJETO GRANDE: Adicione imagem grande do projeto aqui -->
-                <!-- <img src="caminho-para-imagem-projeto3-grande.jpg" alt="Projeto 3" class="w-full h-auto mb-6 rounded-lg"> -->
-                
-                <!-- Placeholder SVG (substitua por sua imagem) -->
-                <svg class="w-full h-auto mb-6 rounded-lg bg-gray-200" height="400" viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg">
-                    <rect width="100%" height="100%" fill="#e5e7eb"/>
-                    <text x="50%" y="50%" font-size="24" text-anchor="middle" fill="#9ca3af">Imagem Grande Projeto 3</text>
-                </svg>
-                
-                <p class="text-gray-700 mb-4">Criação de embalagem premium para linha de produtos gourmet da empresa DEF, com design exclusivo e acabamentos especiais.</p>
-                <p class="text-gray-700 mb-4">O projeto incluiu o desenvolvimento do conceito, design estrutural e gráfico, com foco em transmitir sofisticação e qualidade superior.</p>
+                <!-- Imagem grande para o Projeto 3: Embalagem Premium -->
+                <img src="https://ptcgs.com.br/wp-content/uploads/2023/01/embalagens-1080x675.jpg" alt="Embalagem Premium" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/800x600/cccccc/000000?text=EMBALAGEM+NAO+CARREGADA';">
+
+                <p class="text-gray-700 mb-4">Creation of premium packaging for DEF company's gourmet product line, with exclusive design and special finishes.</p>
+                <p class="text-gray-700 mb-4">The project included concept development, structural and graphic design, with a focus on conveying sophistication and superior quality.</p>
                 <div class="mt-6">
-                    <h4 class="font-bold mb-2">Serviços realizados:</h4>
+                    <h4 class="font-bold mb-2">Services performed:</h4>
                     <ul class="list-disc pl-5 text-gray-700">
-                        <li>Design estrutural</li>
-                        <li>Design gráfico</li>
-                        <li>Mockups 3D</li>
-                        <li>Acompanhamento de produção</li>
+                        <li>Structural design</li>
+                        <li>Graphic design</li>
+                        <li>3D mockups</li>
+                        <li>Production monitoring</li>
                     </ul>
+                </div>
+                <!-- Gemini API Integration: Project Description Generator -->
+                <div class="mt-8 pt-6 border-t border-gray-200">
+                    <h4 class="font-bold text-xl mb-4">Gerador de Descrição de Projeto ✨</h4>
+                    <button id="generate-desc-projeto3" class="px-6 py-3 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 transition flex items-center justify-center space-x-2">
+                        <span id="generate-desc-text-projeto3">Gerar Descrição</span>
+                        <div id="generate-desc-spinner-projeto3" class="spinner hidden"></div>
+                    </button>
+                    <textarea id="generated-description-projeto3" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mt-4 h-32" placeholder="A descrição gerada pela IA aparecerá aqui..." readonly></textarea>
                 </div>
             </div>
         </div>
     </div>
-
-    <script>
-        // Menu Mobile
-        const mobileMenuButton = document.getElementById('mobile-menu-button');
-        const mobileMenu = document.getElementById('mobile-menu');
-        
-        mobileMenuButton.addEventListener('click', () => {
-            mobileMenu.classList.toggle('hidden');
-        });
-        
-        // Links do menu mobile - fechar ao clicar
-        const mobileLinks = mobileMenu.querySelectorAll('a');
-        mobileLinks.forEach(link => {
-            link.addEventListener('click', () => {
-                mobileMenu.classList.add('hidden');
-            });
-        });
-        
-        // Modais de Portfólio
-        function openModal(id) {
-            document.getElementById(`modal-${id}`).classList.remove('hidden');
-            document.body.style.overflow = 'hidden';
-        }
-        
-        const modalCloseButtons = document.querySelectorAll('.modal-close');
-        const modalOverlays = document.querySelectorAll('.modal-overlay');
-        
-        modalCloseButtons.forEach(button => {
-            button.addEventListener('click', () => {
-                button.closest('.modal').classList.add('hidden');
-                document.body.style.overflow = 'auto';
-            });
-        });
-        
-        modalOverlays.forEach(overlay => {
-            overlay.addEventListener('click', () => {
-                overlay.closest('.modal').classList.add('hidden');
-                document.body.style.overflow = 'auto';
-            });
-        });
-        
-        // Formulário de contato
-        const contactForm = document.getElementById('contact-form');
-        contactForm.addEventListener('submit', (e) => {
-            e.preventDefault();
-            alert('Obrigado pelo seu contato! Retornaremos em breve.');
-            contactForm.reset();
-        });
-    </script>
 </body>
 </html>
