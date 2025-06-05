@@ -10,7 +10,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Variáveis globais (preenchidas pelo ambiente de execução)
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
@@ -127,6 +127,64 @@
             return `<div class="star-rating text-yellow-400">${starsHtml}</div>`;
         }
 
+        // Nova função para excluir um feedback
+        window.deleteFeedback = async function(docId) {
+            console.log("Tentando excluir feedback com ID:", docId);
+            if (!isAuthReady || !userId || !db || !auth.currentUser) {
+                showMessage('Erro: Não foi possível excluir. Serviço de feedback não pronto ou não autenticado.', 'error');
+                console.error("Não autenticado ou DB/Usuário ausente para excluir feedback.");
+                return;
+            }
+
+            // Exibir modal de confirmação (substituindo alert/confirm)
+            const confirmDelete = await showConfirmModal('Tem certeza de que deseja excluir este feedback?');
+            if (!confirmDelete) {
+                return; // Usuário cancelou
+            }
+
+            try {
+                // Referência ao documento a ser excluído
+                const docRef = doc(db, `artifacts/${appId}/public/data/feedbacks`, docId);
+                await deleteDoc(docRef);
+                showMessage('Feedback excluído com sucesso!', 'success');
+            } catch (e) {
+                console.error("Erro ao excluir documento: ", e);
+                if (e.code && e.message) {
+                    showMessage(`Erro ao excluir feedback: ${e.message} (Código: ${e.code})`, 'error');
+                } else {
+                    showMessage('Erro ao excluir feedback. Tente novamente.', 'error');
+                }
+            }
+        };
+
+        // Função para mostrar um modal de confirmação customizado
+        function showConfirmModal(message) {
+            return new Promise((resolve) => {
+                const modalHtml = `
+                    <div id="confirm-modal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[1001]">
+                        <div class="bg-white p-8 rounded-lg shadow-xl text-center">
+                            <p class="text-lg font-semibold mb-6">${message}</p>
+                            <div class="flex justify-center space-x-4">
+                                <button id="confirm-yes" class="px-5 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition">Sim</button>
+                                <button id="confirm-no" class="px-5 py-2 bg-gray-300 text-gray-800 rounded-md hover:bg-gray-400 transition">Não</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                document.body.insertAdjacentHTML('beforeend', modalHtml);
+
+                document.getElementById('confirm-yes').onclick = () => {
+                    document.getElementById('confirm-modal').remove();
+                    resolve(true);
+                };
+                document.getElementById('confirm-no').onclick = () => {
+                    document.getElementById('confirm-modal').remove();
+                    resolve(false);
+                };
+            });
+        }
+
+
         // Função para carregar e exibir feedbacks do Firestore
         async function loadFeedbacks() {
             if (!isAuthReady || !db || !auth.currentUser) { // Check if db and current user are truly available
@@ -151,13 +209,17 @@
                     snapshot.forEach((doc) => {
                         const feedback = doc.data();
                         const feedbackItem = document.createElement('div');
-                        feedbackItem.className = 'bg-white p-6 rounded-lg shadow-md';
+                        feedbackItem.className = 'bg-white p-6 rounded-lg shadow-md relative'; // Adicionado 'relative' para posicionar o botão
                         feedbackItem.innerHTML = `
-                            <div class="flex items-center mb-4">
+                            <div class="flex items-center justify-between mb-4">
                                 <div>
                                     <p class="font-bold text-lg">${feedback.name || 'Anónimo'}</p>
                                     ${generateStarRating(feedback.rating || 5)}
                                 </div>
+                                <!-- Botão de Excluir -->
+                                <button onclick="deleteFeedback('${doc.id}')" class="text-red-500 hover:text-red-700 transition duration-300 ease-in-out absolute top-4 right-4">
+                                    <i class="fas fa-trash-alt"></i>
+                                </button>
                             </div>
                             <p class="text-gray-700 italic">"${feedback.message || 'Sem comentário'}"</p>
                         `;
@@ -725,7 +787,7 @@
                 <p>&copy; 2023 MVdesigner. Todos os direitos reservados.</p>
             </div>
         </div>
-    </footer>
+    </section>
 
     <!-- Portfolio Modals -->
     <div id="modal-projeto1" class="modal fixed inset-0 z-50 flex items-center justify-center hidden">
