@@ -14,14 +14,25 @@
 
         // Variáveis globais (preenchidas pelo ambiente de execução)
         const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+        
+        // =======================================================================
+        // SUA CONFIGURAÇÃO REAL DO FIREBASE INSERIDA AQUI
+        const firebaseConfigRaw = JSON.stringify({
+          apiKey: "AIzaSyB_9qS8BAdN4X9ozGUWuxvU08czFhU2y3k",
+          authDomain: "tirano-d0934.firebaseapp.com",
+          projectId: "tirano-d0934",
+          storageBucket: "tirano-d0934.firebasestorage.app",
+          messagingSenderId: "885708839965",
+          appId: "1:885708839965:web:e63fe66c5ebbfaede3faf4",
+          measurementId: "G-X1EY10SBFG"
+        });
+        // =======================================================================
 
-        // Inicializar Firebase
-        const firebaseApp = initializeApp(firebaseConfig);
-        const db = getFirestore(firebaseApp);
-        const auth = getAuth(firebaseApp);
+        console.log("Raw Firebase Config from environment:", firebaseConfigRaw);
 
+        let firebaseApp;
+        let db;
+        let auth;
         let userId = null;
         let isAuthReady = false;
 
@@ -47,35 +58,58 @@
             }, 3000);
         }
 
-        // Autenticação Firebase
-        onAuthStateChanged(auth, async (user) => {
-            if (user) {
-                userId = user.uid;
-                console.log("Firebase Authenticated:", userId);
-                isAuthReady = true;
-                // Carregar feedbacks após a autenticação
-                loadFeedbacks();
-            } else {
-                try {
-                    // Verificação para usar custom token ou autenticação anônima
-                    if (initialAuthToken) {
-                        await signInWithCustomToken(auth, initialAuthToken);
-                        userId = auth.currentUser.uid; // Obter UID após login com custom token
-                        console.log("Firebase Authenticated with Custom Token:", userId);
-                    } else {
-                        const credential = await signInAnonymously(auth);
-                        userId = credential.user.uid;
-                        console.log("Firebase Authenticated Anonymously:", userId);
-                    }
-                    isAuthReady = true;
-                    // Carregar feedbacks após a autenticação
-                    loadFeedbacks();
-                } catch (error) {
-                    console.error("Erro na autenticação:", error);
-                    showMessage('Erro de autenticação. Tente recarregar a página.', 'error');
-                }
+        // Função para inicializar Firebase e configurar autenticação
+        async function initializeFirebase() {
+            let firebaseConfig;
+            try {
+                firebaseConfig = JSON.parse(firebaseConfigRaw);
+            } catch (e) {
+                console.error("Erro ao analisar a configuração JSON do Firebase:", e);
+                showMessage('Erro na configuração do Firebase. Recarregue a página.', 'error');
+                return; // Stop execution if config is invalid
             }
-        });
+
+            // Check if projectId exists in the parsed config
+            if (!firebaseConfig.projectId) {
+                console.error("FirebaseError: 'projectId' não encontrado na configuração do Firebase.");
+                showMessage('Erro: ID do Projeto Firebase não configurado. Por favor, entre em contato com o suporte ou verifique a configuração do ambiente.', 'error');
+                return; // Stop execution if projectId is missing
+            }
+
+            try {
+                firebaseApp = initializeApp(firebaseConfig);
+                db = getFirestore(firebaseApp);
+                auth = getAuth(firebaseApp);
+
+                onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        console.log("Firebase Authenticated, userId:", userId);
+                        isAuthReady = true;
+                        loadFeedbacks(); // Load data only when user is genuinely authenticated
+                    } else {
+                        console.log("User not authenticated, attempting sign-in...");
+                        try {
+                            // initialAuthToken is assumed to be globally available from the environment
+                            // For Canvas, it's provided as __initial_auth_token
+                            const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(auth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
+                            // onAuthStateChanged will be triggered again with the user object after successful sign-in
+                        } catch (error) {
+                            console.error("Erro ao tentar autenticar:", error);
+                            showMessage('Erro de autenticação. Tente recarregar a página.', 'error');
+                        }
+                    }
+                });
+            } catch (initError) {
+                console.error("Erro ao inicializar o Firebase App:", initError);
+                showMessage('Erro crítico ao inicializar o Firebase. Verifique o console.', 'error');
+            }
+        }
 
         // Função para gerar estrelas HTML
         function generateStarRating(rating) {
@@ -92,62 +126,81 @@
 
         // Função para carregar e exibir feedbacks do Firestore
         async function loadFeedbacks() {
-            if (!isAuthReady || !userId) {
-                console.log("Autenticação não pronta para carregar feedbacks.");
+            if (!isAuthReady || !db || !auth.currentUser) { // Check if db and current user are truly available
+                console.log("Autenticação não pronta ou DB/Usuário ausente para carregar feedbacks.");
                 return;
             }
 
             const feedbacksList = document.getElementById('feedbacks-list');
             feedbacksList.innerHTML = '<p class="text-center text-gray-500 col-span-full">A carregar feedbacks...</p>'; // Loading state
 
-            // Ordenar por data de criação para mostrar os mais recentes primeiro
-            const q = query(collection(db, `artifacts/${appId}/public/data/feedbacks`), orderBy("timestamp", "desc"));
+            try {
+                // Ordenar por data de criação para mostrar os mais recentes primeiro
+                const q = query(collection(db, `artifacts/${appId}/public/data/feedbacks`), orderBy("timestamp", "desc"));
 
-            onSnapshot(q, (snapshot) => {
-                if (snapshot.empty) {
-                    feedbacksList.innerHTML = '<p class="text-center text-gray-500 col-span-full">Ainda não há feedbacks. Seja o primeiro a comentar!</p>';
-                    return;
-                }
+                onSnapshot(q, (snapshot) => {
+                    if (snapshot.empty) {
+                        feedbacksList.innerHTML = '<p class="text-center text-gray-500 col-span-full">Ainda não há feedbacks. Seja o primeiro a comentar!</p>';
+                        return;
+                    }
 
-                feedbacksList.innerHTML = ''; // Limpa os feedbacks existentes
-                snapshot.forEach((doc) => {
-                    const feedback = doc.data();
-                    const feedbackItem = document.createElement('div');
-                    feedbackItem.className = 'bg-white p-6 rounded-lg shadow-md';
-                    feedbackItem.innerHTML = `
-                        <div class="flex items-center mb-4">
-                            <div>
-                                <p class="font-bold text-lg">${feedback.name || 'Anónimo'}</p>
-                                ${generateStarRating(feedback.rating || 5)}
+                    feedbacksList.innerHTML = ''; // Limpa os feedbacks existentes
+                    snapshot.forEach((doc) => {
+                        const feedback = doc.data();
+                        const feedbackItem = document.createElement('div');
+                        feedbackItem.className = 'bg-white p-6 rounded-lg shadow-md';
+                        feedbackItem.innerHTML = `
+                            <div class="flex items-center mb-4">
+                                <div>
+                                    <p class="font-bold text-lg">${feedback.name || 'Anónimo'}</p>
+                                    ${generateStarRating(feedback.rating || 5)}
+                                </div>
                             </div>
-                        </div>
-                        <p class="text-gray-700 italic">"${feedback.message || 'Sem comentário'}"</p>
-                    `;
-                    feedbacksList.appendChild(feedbackItem);
+                            <p class="text-gray-700 italic">"${feedback.message || 'Sem comentário'}"</p>
+                        `;
+                        feedbacksList.appendChild(feedbackItem);
+                    });
+                }, (error) => {
+                    console.error("Erro ao carregar feedbacks:", error);
+                    feedbacksList.innerHTML = '<p class="text-center text-red-500 col-span-full">Erro ao carregar feedbacks. Tente novamente mais tarde.</p>';
                 });
-            }, (error) => {
-                console.error("Erro ao carregar feedbacks:", error);
-                feedbacksList.innerHTML = '<p class="text-center text-red-500 col-span-full">Erro ao carregar feedbacks. Tente novamente mais tarde.</p>';
-            });
+            } catch (e) {
+                console.error("Erro ao configurar onSnapshot para feedbacks:", e);
+                showMessage('Erro ao inicializar o carregamento de feedbacks. Tente recarregar a página.', 'error');
+            }
         }
 
         // Função para enviar feedback para o Firestore
         async function submitFeedback(event) {
             event.preventDefault(); // Impede o envio padrão do formulário
 
-            if (!isAuthReady || !userId) {
-                showMessage('Erro: Autenticação não concluída. Tente novamente.', 'error');
+            // Logs adicionais para depuração do estado de autenticação e DB
+            console.log("--- Tentando submeter feedback ---");
+            console.log("Estado da Autenticação (isAuthReady):", isAuthReady);
+            console.log("ID do usuário (userId):", userId);
+            console.log("Objeto DB disponível (!!db):", !!db);
+            console.log("Objeto Auth.currentUser:", auth && auth.currentUser ? auth.currentUser.uid : "Não autenticado ou auth não disponível");
+
+
+            if (!isAuthReady || !userId || !db || !auth.currentUser) {
+                showMessage('Erro: Serviço de feedback não pronto. Tente novamente.', 'error');
+                console.error("Autenticação não pronta, userId ausente, DB não inicializado ou auth.currentUser não disponível.");
                 return;
             }
 
             const form = event.target;
             const submitButton = form.querySelector('button[type="submit"]');
-            const spinner = form.querySelector('.spinner');
             const originalButtonText = submitButton.textContent;
+            // Corrigido: Seleciona o spinner diretamente do botão de envio
+            const spinner = submitButton.querySelector('.spinner'); 
 
             submitButton.disabled = true;
             submitButton.textContent = 'A enviar...';
-            spinner.classList.remove('hidden');
+            // Verifica se o spinner existe antes de tentar manipular sua classList
+            if (spinner) {
+                spinner.classList.remove('hidden');
+            }
+            
 
             const name = form.elements.name.value;
             const email = form.elements.email.value;
@@ -155,14 +208,18 @@
             const ratingInput = form.querySelector('input[name="rating"]:checked');
             const rating = ratingInput ? parseInt(ratingInput.value) : 0; // Captura a avaliação das estrelas
 
+            // Log para verificar o valor da avaliação
+            console.log("Avaliação capturada:", rating);
+
             if (rating === 0) {
                 showMessage('Por favor, selecione uma avaliação em estrelas.', 'error');
                 submitButton.disabled = false;
                 submitButton.textContent = originalButtonText;
-                spinner.classList.add('hidden');
+                if (spinner) {
+                    spinner.classList.add('hidden');
+                }
                 return;
             }
-
 
             try {
                 // Adiciona o feedback à coleção 'feedbacks'
@@ -175,21 +232,35 @@
                 });
                 showMessage('Obrigado pelo seu feedback! Ele aparecerá em breve.', 'success');
                 form.reset();
+
                 // Reset the star rating visual after form submission
-                const stars = form.querySelectorAll('.star-rating-input input');
-                stars.forEach(star => star.checked = false);
+                const starLabels = form.querySelectorAll('.star-rating-input label');
+                starLabels.forEach(label => {
+                    label.querySelector('i').classList.remove('fas');
+                    label.querySelector('i').classList.add('far');
+                });
+
             } catch (e) {
                 console.error("Erro ao adicionar documento: ", e);
-                showMessage('Erro ao enviar feedback. Tente novamente.', 'error');
+                // Exibe o erro específico do Firebase se disponível, senão uma mensagem genérica
+                if (e.code && e.message) {
+                    showMessage(`Erro ao enviar feedback: ${e.message} (Código: ${e.code})`, 'error');
+                } else {
+                    showMessage('Erro ao enviar feedback. Tente novamente.', 'error');
+                }
             } finally {
                 submitButton.disabled = false;
                 submitButton.textContent = originalButtonText;
-                spinner.classList.add('hidden');
+                if (spinner) {
+                    spinner.classList.add('hidden');
+                }
             }
         }
 
         // Adiciona o listener para o formulário de feedback (executado após o DOM carregar)
         document.addEventListener('DOMContentLoaded', () => {
+            initializeFirebase(); // Call Firebase initialization on DOM ready
+
             const feedbackForm = document.getElementById('feedback-form');
             if (feedbackForm) {
                 feedbackForm.addEventListener('submit', submitFeedback);
@@ -212,16 +283,7 @@
                     });
                 });
             }
-
-            // Contact Form: Ajustado para usar showMessage em vez de alert
-            // O formulário de contato foi removido, então este evento não é mais necessário
-            // const contactForm = document.getElementById('contact-form');
-            // contactForm.addEventListener('submit', (e) => {
-            //     e.preventDefault();
-            //     showMessage('Obrigado pelo seu contato! Retornaremos em breve.', 'success');
-            //     contactForm.reset();
-            // });
-
+            
             // Geração de Descrição (Gemini API) - Mantido
             async function generateProjectDescription(projectId, projectTitle) {
                 const button = document.getElementById(`generate-desc-${projectId}`);
@@ -359,7 +421,7 @@
             <nav class="hidden md:flex space-x-8">
                 <a href="#home" class="nav-link font-medium">Home</a>
                 <a href="#services" class="nav-link font-medium">Serviços</a>
-                <a href="#portfolio" class="nav-link font-medium">Portfólio</a>
+                <a href="#portfolio" class-="nav-link font-medium">Portfólio</a>
                 <a href="#about" class="nav-link font-medium">Sobre</a>
                 <a href="#testimonials" class="nav-link font-medium">Feedbacks</a>
                 <a href="#contact" class="nav-link font-medium">Contato</a>
@@ -397,7 +459,7 @@
                 </div>
                 <div class="md:w-1/2">
                     <!-- Imagem para a seção Hero -->
-                    <img src="https://cdn.discordapp.com/attachments/1186109058458071077/1380220081895772282/3656.png?ex=6843159e&is=6841c41e&hm=fc5b5409d33ee79eeaec5f9f73e64ec5f80f86286770abbfdff1bdb615c510c9&" alt="[Image of mesa de trabalho com objetos de design]" class="w-full h-auto rounded-lg shadow-lg" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=IMAGEM+HERO+NAO+CARREGADA';">
+                    <img src="https://cdn.discordapp.com/attachments/1186109058458071077/1380220081895772282/3656.png?ex=6843159e&is=6841c41e&hm=fc5b5409d33ee79eeaec5f9f73e64ec5f80f86286770abbfdff1bdb615c510c9&" alt="Imagem do Herói" class="w-full h-auto rounded-lg shadow-lg" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=IMAGEM+HERO+NAO+CARREGADA';">
                 </div>
             </div>
         </div>
@@ -490,7 +552,7 @@
             <div class="flex flex-col md:flex-row items-center">
                 <div class="md:w-1/2 mb-8 md:mb-0 md:pr-8">
                     <!-- Imagem para a seção Sobre -->
-                    <img src="https://cdn.discordapp.com/attachments/1186109058458071077/1380216951686828093/Imagem_do_WhatsApp_de_2025-06-04_as_21.43.20_dbe9b3ee.jpg?ex=684312b4&is=6841c134&hm=e69ac04acd1e15b08f107d25b204135744ed85fbb47e6216c5660b71aaba6dd6&" alt="[Image of um profissional trabalhando em design]" class="w-full h-auto rounded-lg shadow-lg" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=IMAGEM+SOBRE+NAO+CARREGADA';">
+                    <img src="https://cdn.discordapp.com/attachments/1186109058458071077/1380216951686828093/Imagem_do_WhatsApp_de_2025-06-04_as_21.43.20_dbe9b3ee.jpg?ex=684312b4&is=6841c134&hm=e69ac04acd1e15b08f107d25b204135744ed85fbb47e6216c5660b71aaba6dd6&" alt="Imagem sobre" class="w-full h-auto rounded-lg shadow-lg" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=IMAGEM+SOBRE+NAO+CARREGADA';">
                 </div>
                 <div class="md:w-1/2">
                     <h2 class="text-3xl font-bold mb-6">Sobre MVdesigner</h2>
@@ -539,7 +601,8 @@
                     <div class="mb-4">
                         <label class="block text-sm font-medium text-gray-700 mb-2 text-center">Sua Avaliação:</label>
                         <div class="star-rating-input">
-                            <input type="radio" id="star5" name="rating" value="5" required>
+                            <!-- Removido o atributo 'required' de todos os inputs de rádio -->
+                            <input type="radio" id="star5" name="rating" value="5">
                             <label for="star5" data-value="5"><i class="fas fa-star"></i></label>
                             <input type="radio" id="star4" name="rating" value="4">
                             <label for="star4" data-value="4"><i class="fas fa-star"></i></label>
@@ -625,7 +688,7 @@
                         <ul class="space-y-2">
                             <li><a href="#home" class="text-gray-400 hover:text-white transition">Home</a></li>
                             <li><a href="#services" class="text-gray-400 hover:text-white transition">Serviços</a></li>
-                            <li><a href="#portfolio" class="text-gray-400 hover:text-white transition">Portfólio</a></li>
+                            <li><a href="#portfolio" class-="nav-link font-medium">Portfólio</a></li>
                             <li><a href="#about" class="text-gray-400 hover:text-white transition">Sobre</a></li>
                             <li><a href="#testimonials" class="text-gray-400 hover:text-white transition">Feedbacks</a></li>
                             <li><a href="#contact" class="text-gray-400 hover:text-white transition">Contato</a></li>
@@ -753,7 +816,7 @@
                     </button>
                 </div>
                 <!-- Imagem grande para o Projeto 3: Embalagem Premium -->
-                <img src="https://ptcgs.com.br/wp-content/uploads/2023/01/embalagens-1080x675.jpg" alt="Embalagem Premium" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/800x600/cccccc/000000?text=EMBALAGEM+NAO+CARREGADA';">
+                <img src="https://ptcgs.com.br/wp-content/uploads/2023/01/embalagens-1080x675.jpg" alt="Embalagem Premium" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/800x600/cccccc/000000?text=IMAGEM+NAO+CARREGADA';">
 
                 <p class="text-gray-700 mb-4">Creation of premium packaging for DEF company's gourmet product line, with exclusive design and special finishes.</p>
                 <p class="text-gray-700 mb-4">The project included concept development, structural and graphic design, with a focus on conveying sophistication and superior quality.</p>
