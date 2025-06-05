@@ -76,6 +76,9 @@
                 return; // Stop execution if projectId is missing
             }
 
+            // Adicionado log para verificar o objeto firebaseConfig antes da inicialização
+            console.log("Firebase Config object before initializeApp:", firebaseConfig);
+
             try {
                 firebaseApp = initializeApp(firebaseConfig);
                 db = getFirestore(firebaseApp);
