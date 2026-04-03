@@ -3,908 +3,350 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MVdesigner - Portfólio</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <!-- Firebase SDK - Adicionado para Firestore e Autenticação -->
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, doc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // Variáveis globais (preenchidas pelo ambiente de execução)
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        
-        // =======================================================================
-        // SUA CONFIGURAÇÃO REAL DO FIREBASE INSERIDA AQUI
-        const firebaseConfigRaw = JSON.stringify({
-          apiKey: "AIzaSyB_9qS8BAdN4X9ozGUWuxvU08czFhU2y3k",
-          authDomain: "tirano-d0934.firebaseapp.com",
-          projectId: "tirano-d0934",
-          storageBucket: "tirano-d0934.firebasestorage.app",
-          messagingSenderId: "885708839965",
-          appId: "1:885708839965:web:e63fe66c5ebbfaede3faf4",
-          measurementId: "G-X1EY10SBFG"
-        });
-        // =======================================================================
-
-        console.log("Raw Firebase Config from environment:", firebaseConfigRaw);
-
-        let firebaseApp;
-        let db;
-        let auth;
-        let userId = null;
-        let isAuthReady = false;
-
-        // Função para mostrar mensagem customizada
-        function showMessage(message, type = 'success') {
-            const messageBox = document.getElementById('message-box');
-            messageBox.textContent = message;
-            messageBox.className = `fixed top-20 right-4 p-4 rounded-md shadow-lg z-[1000] transition-all duration-300 transform ${
-                type === 'success' ? 'bg-green-500 text-white' : 'bg-red-500 text-white'
-            } opacity-0 translate-x-full`;
-            messageBox.classList.remove('hidden');
-
-            setTimeout(() => {
-                messageBox.classList.remove('opacity-0', 'translate-x-full');
-                messageBox.classList.add('opacity-100', 'translate-x-0');
-            }, 50);
-
-            setTimeout(() => {
-                messageBox.classList.add('opacity-0', 'translate-x-full');
-                messageBox.addEventListener('transitionend', () => {
-                    messageBox.classList.add('hidden');
-                }, { once: true });
-            }, 3000);
-        }
-
-        // Função para inicializar Firebase e configurar autenticação
-        async function initializeFirebase() {
-            let firebaseConfig;
-            try {
-                firebaseConfig = JSON.parse(firebaseConfigRaw);
-            } catch (e) {
-                console.error("Erro ao analisar a configuração JSON do Firebase:", e);
-                showMessage('Erro na configuração do Firebase. Recarregue a página.', 'error');
-                return; // Stop execution if config is invalid
-            }
-
-            // Check if projectId exists in the parsed config
-            if (!firebaseConfig.projectId) {
-                console.error("FirebaseError: 'projectId' não encontrado na configuração do Firebase.");
-                showMessage('Erro: ID do Projeto Firebase não configurado. Por favor, entre em contato com o suporte ou verifique a configuração do ambiente.', 'error');
-                return; // Stop execution if projectId is missing
-            }
-
-            // Adicionado log para verificar o objeto firebaseConfig antes da inicialização
-            console.log("Firebase Config object before initializeApp:", firebaseConfig);
-
-            try {
-                firebaseApp = initializeApp(firebaseConfig);
-                db = getFirestore(firebaseApp);
-                auth = getAuth(firebaseApp);
-
-                onAuthStateChanged(auth, async (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        console.log("Firebase Authenticated, userId:", userId);
-                        isAuthReady = true;
-                        loadFeedbacks(); // Load data only when user is genuinely authenticated
-                    } else {
-                        console.log("User not authenticated, attempting sign-in...");
-                        try {
-                            // initialAuthToken is assumed to be globally available from the environment
-                            // For Canvas, it's provided as __initial_auth_token
-                            const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-                            if (initialAuthToken) {
-                                await signInWithCustomToken(auth, initialAuthToken);
-                            } else {
-                                await signInAnonymously(auth);
-                            }
-                            // onAuthStateChanged will be triggered again with the user object after successful sign-in
-                        } catch (error) {
-                            console.error("Erro ao tentar autenticar:", error);
-                            showMessage('Erro de autenticação. Tente recarregar a página.', 'error');
-                        }
-                    }
-                });
-            } catch (initError) {
-                console.error("Erro ao inicializar o Firebase App:", initError);
-                showMessage('Erro crítico ao inicializar o Firebase. Verifique o console.', 'error');
-            }
-        }
-
-        // Função para gerar estrelas HTML
-        function generateStarRating(rating) {
-            let starsHtml = '';
-            for (let i = 0; i < 5; i++) {
-                if (i < rating) {
-                    starsHtml += '<i class="fas fa-star"></i>'; // Estrela preenchida
-                } else {
-                    starsHtml += '<i class="far fa-star"></i>'; // Estrela vazia
-                }
-            }
-            return `<div class="star-rating text-yellow-400">${starsHtml}</div>`;
-        }
-
-        // Nova função para excluir um feedback
-        window.deleteFeedback = async function(docId) {
-            console.log("Tentando excluir feedback com ID:", docId);
-            if (!isAuthReady || !userId || !db || !auth.currentUser) {
-                showMessage('Erro: Não foi possível excluir. Serviço de feedback não pronto ou não autenticado.', 'error');
-                console.error("Não autenticado ou DB/Usuário ausente para excluir feedback.");
-                return;
-            }
-
-            // Exibir modal de confirmação (substituindo alert/confirm)
-            const confirmDelete = await showConfirmModal('Tem certeza de que deseja excluir este feedback?');
-            if (!confirmDelete) {
-                return; // Usuário cancelou
-            }
-
-            try {
-                // Referência ao documento a ser excluído
-                const docRef = doc(db, `artifacts/${appId}/public/data/feedbacks`, docId);
-                await deleteDoc(docRef);
-                showMessage('Feedback excluído com sucesso!', 'success');
-            } catch (e) {
-                console.error("Erro ao excluir documento: ", e);
-                if (e.code && e.message) {
-                    showMessage(`Erro ao excluir feedback: ${e.message} (Código: ${e.code})`, 'error');
-                } else {
-                    showMessage('Erro ao excluir feedback. Tente novamente.', 'error');
-                }
-            }
-        };
-
-        // Função para mostrar um modal de confirmação customizado
-        function showConfirmModal(message) {
-            return new Promise((resolve) => {
-                const modalHtml = `
-                    <div id="confirm-modal" class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[1001]">
-                        <div class="bg-white p-8 rounded-lg shadow-xl text-center">
-                            <p class="text-lg font-semibold mb-6">${message}</p>
-                            <div class="flex justify-center space-x-4">
-                                <button id="confirm-yes" class="px-5 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition">Sim</button>
-                                <button id="confirm-no" class="px-5 py-2 bg-gray-300 text-gray-800 rounded-md hover:bg-gray-400 transition">Não</button>
-                            </div>
-                        </div>
-                    </div>
-                `;
-                document.body.insertAdjacentHTML('beforeend', modalHtml);
-
-                document.getElementById('confirm-yes').onclick = () => {
-                    document.getElementById('confirm-modal').remove();
-                    resolve(true);
-                };
-                document.getElementById('confirm-no').onclick = () => {
-                    document.getElementById('confirm-modal').remove();
-                    resolve(false);
-                };
-            });
-        }
-
-
-        // Função para carregar e exibir feedbacks do Firestore
-        async function loadFeedbacks() {
-            if (!isAuthReady || !db || !auth.currentUser) { // Check if db and current user are truly available
-                console.log("Autenticação não pronta ou DB/Usuário ausente para carregar feedbacks.");
-                return;
-            }
-
-            const feedbacksList = document.getElementById('feedbacks-list');
-            feedbacksList.innerHTML = '<p class="text-center text-gray-500 col-span-full">A carregar feedbacks...</p>'; // Loading state
-
-            try {
-                // Ordenar por data de criação para mostrar os mais recentes primeiro
-                const q = query(collection(db, `artifacts/${appId}/public/data/feedbacks`), orderBy("timestamp", "desc"));
-
-                onSnapshot(q, (snapshot) => {
-                    if (snapshot.empty) {
-                        feedbacksList.innerHTML = '<p class="text-center text-gray-500 col-span-full">Ainda não há feedbacks. Seja o primeiro a comentar!</p>';
-                        return;
-                    }
-
-                    feedbacksList.innerHTML = ''; // Limpa os feedbacks existentes
-                    snapshot.forEach((doc) => {
-                        const feedback = doc.data();
-                        const feedbackItem = document.createElement('div');
-                        feedbackItem.className = 'bg-white p-6 rounded-lg shadow-md relative'; // Adicionado 'relative' para posicionar o botão
-                        feedbackItem.innerHTML = `
-                            <div class="flex items-center justify-between mb-4">
-                                <div>
-                                    <p class="font-bold text-lg">${feedback.name || 'Anónimo'}</p>
-                                    ${generateStarRating(feedback.rating || 5)}
-                                </div>
-                                <!-- Botão de Excluir -->
-                                <button onclick="deleteFeedback('${doc.id}')" class="text-red-500 hover:text-red-700 transition duration-300 ease-in-out absolute top-4 right-4">
-                                    <i class="fas fa-trash-alt"></i>
-                                </button>
-                            </div>
-                            <p class="text-gray-700 italic">"${feedback.message || 'Sem comentário'}"</p>
-                        `;
-                        feedbacksList.appendChild(feedbackItem);
-                    });
-                }, (error) => {
-                    console.error("Erro ao carregar feedbacks:", error);
-                    feedbacksList.innerHTML = '<p class="text-center text-red-500 col-span-full">Erro ao carregar feedbacks. Tente novamente mais tarde.</p>';
-                });
-            } catch (e) {
-                console.error("Erro ao configurar onSnapshot para feedbacks:", e);
-                showMessage('Erro ao inicializar o carregamento de feedbacks. Tente recarregar a página.', 'error');
-            }
-        }
-
-        // Função para enviar feedback para o Firestore
-        async function submitFeedback(event) {
-            event.preventDefault(); // Impede o envio padrão do formulário
-
-            // Logs adicionais para depuração do estado de autenticação e DB
-            console.log("--- Tentando submeter feedback ---");
-            console.log("Estado da Autenticação (isAuthReady):", isAuthReady);
-            console.log("ID do usuário (userId):", userId);
-            console.log("Objeto DB disponível (!!db):", !!db);
-            console.log("Objeto Auth.currentUser:", auth && auth.currentUser ? auth.currentUser.uid : "Não autenticado ou auth não disponível");
-
-
-            if (!isAuthReady || !userId || !db || !auth.currentUser) {
-                showMessage('Erro: Serviço de feedback não pronto. Tente novamente.', 'error');
-                console.error("Autenticação não pronta, userId ausente, DB não inicializado ou auth.currentUser não disponível.");
-                return;
-            }
-
-            const form = event.target;
-            const submitButton = form.querySelector('button[type="submit"]');
-            const originalButtonText = submitButton.textContent;
-            // Corrigido: Seleciona o spinner diretamente do botão de envio
-            const spinner = submitButton.querySelector('.spinner'); 
-
-            submitButton.disabled = true;
-            submitButton.textContent = 'A enviar...';
-            // Verifica se o spinner existe antes de tentar manipular sua classList
-            if (spinner) {
-                spinner.classList.remove('hidden');
-            }
-            
-
-            const name = form.elements.name.value;
-            const email = form.elements.email.value;
-            const message = form.elements.message.value;
-            const ratingInput = form.querySelector('input[name="rating"]:checked');
-            const rating = ratingInput ? parseInt(ratingInput.value) : 0; // Captura a avaliação das estrelas
-
-            // Log para verificar o valor da avaliação
-            console.log("Avaliação capturada:", rating);
-
-            if (rating === 0) {
-                showMessage('Por favor, selecione uma avaliação em estrelas.', 'error');
-                submitButton.disabled = false;
-                submitButton.textContent = originalButtonText;
-                if (spinner) {
-                    spinner.classList.add('hidden');
-                }
-                return;
-            }
-
-            try {
-                // Adiciona o feedback à coleção 'feedbacks'
-                await addDoc(collection(db, `artifacts/${appId}/public/data/feedbacks`), {
-                    name: name,
-                    email: email,
-                    message: message,
-                    rating: rating,
-                    timestamp: new Date() // Adiciona um timestamp para ordenação
-                });
-                showMessage('Obrigado pelo seu feedback! Ele aparecerá em breve.', 'success');
-                form.reset();
-
-                // Reset the star rating visual after form submission
-                const starLabels = form.querySelectorAll('.star-rating-input label');
-                starLabels.forEach(label => {
-                    label.querySelector('i').classList.remove('fas');
-                    label.querySelector('i').classList.add('far');
-                });
-
-            } catch (e) {
-                console.error("Erro ao adicionar documento: ", e);
-                // Exibe o erro específico do Firebase se disponível, senão uma mensagem genérica
-                if (e.code && e.message) {
-                    showMessage(`Erro ao enviar feedback: ${e.message} (Código: ${e.code})`, 'error');
-                } else {
-                    showMessage('Erro ao enviar feedback. Tente novamente.', 'error');
-                }
-            } finally {
-                submitButton.disabled = false;
-                submitButton.textContent = originalButtonText;
-                if (spinner) {
-                    spinner.classList.add('hidden');
-                }
-            }
-        }
-
-        // Adiciona o listener para o formulário de feedback (executado após o DOM carregar)
-        document.addEventListener('DOMContentLoaded', () => {
-            initializeFirebase(); // Call Firebase initialization on DOM ready
-
-            const feedbackForm = document.getElementById('feedback-form');
-            if (feedbackForm) {
-                feedbackForm.addEventListener('submit', submitFeedback);
-
-                // Add event listeners for star rating interaction
-                const stars = feedbackForm.querySelectorAll('.star-rating-input label');
-                stars.forEach(star => {
-                    star.addEventListener('click', function() {
-                        const value = parseInt(this.getAttribute('data-value'));
-                        feedbackForm.querySelectorAll('.star-rating-input label').forEach(s => {
-                            const sValue = parseInt(s.getAttribute('data-value'));
-                            if (sValue <= value) {
-                                s.querySelector('i').classList.remove('far');
-                                s.querySelector('i').classList.add('fas');
-                            } else {
-                                s.querySelector('i').classList.remove('fas');
-                                s.querySelector('i').classList.add('far');
-                            }
-                        });
-                    });
-                });
-            }
-            
-            // Geração de Descrição (Gemini API) - Mantido
-            async function generateProjectDescription(projectId, projectTitle) {
-                const button = document.getElementById(`generate-desc-${projectId}`);
-                const buttonText = document.getElementById(`generate-desc-text-${projectId}`);
-                const spinner = document.getElementById(`generate-desc-spinner-${projectId}`);
-                const textarea = document.getElementById(`generated-description-${projectId}`);
-
-                button.disabled = true;
-                buttonText.textContent = 'A gerar...';
-                spinner.classList.remove('hidden');
-                textarea.value = ''; // Limpa texto anterior
-
-                const prompt = `Gere uma descrição de projeto profissional e criativa para um portfólio de design. O projeto se chama '${projectTitle}'. Inclua detalhes sobre o objetivo do projeto, o processo de design e o impacto no cliente, em português.`;
-
-                let chatHistory = [];
-                chatHistory.push({ role: "user", parts: [{ text: prompt }] });
-                const payload = { contents: chatHistory };
-                const apiKey = ""; // Deixe como está. O ambiente fornecerá a chave.
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
-
-                try {
-                    const response = await fetch(apiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                    const result = await response.json();
-
-                    if (result.candidates && result.candidates.length > 0 &&
-                        result.candidates[0].content && result.candidates[0].content.parts &&
-                        result.candidates[0].content.parts.length > 0) {
-                        const text = result.candidates[0].content.parts[0].text;
-                        textarea.value = text;
-                    } else {
-                        textarea.value = 'Erro ao gerar descrição. Tente novamente.';
-                        console.error('Estrutura de resposta inesperada da API Gemini:', result);
-                    }
-                } catch (error) {
-                    textarea.value = 'Erro na conexão com a IA. Verifique a sua rede.';
-                    console.error('Erro ao chamar a API Gemini:', error);
-                } finally {
-                    button.disabled = false;
-                    buttonText.textContent = 'Gerar Descrição';
-                    spinner.classList.add('hidden');
-                }
-            }
-
-            // Anexar event listeners aos botões dentro dos modais
-            const project1Button = document.getElementById('generate-desc-projeto1');
-            const project1Title = document.getElementById('projeto1-title').textContent;
-            if (project1Button) {
-                project1Button.addEventListener('click', () => generateProjectDescription('projeto1', project1Title));
-            }
-
-            const project2Button = document.getElementById('generate-desc-projeto2');
-            const project2Title = document.getElementById('projeto2-title').textContent;
-            if (project2Button) {
-                project2Button.addEventListener('click', () => generateProjectDescription('projeto2', project2Title));
-            }
-
-            const project3Button = document.getElementById('generate-desc-projeto3');
-            const project3Title = document.getElementById('projeto3-title').textContent;
-            if (project3Button) {
-                project3Button.addEventListener('click', () => generateProjectDescription('projeto3', project3Title));
-            }
-        });
-    </script>
+    <title>MV Studio | Design Estratégico & Premium</title>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;700&display=swap" rel="stylesheet">
     <style>
-        /* Resto do CSS original */
-        .star-rating .fas.fa-star {
-            color: #FFD700;
-        }
-        .star-rating .far.fa-star {
-            color: #d1d5db;
-        }
-        .spinner {
-            border: 4px solid rgba(0, 0, 0, 0.1);
-            border-left-color: #3498db;
-            border-radius: 50%;
-            width: 24px;
-            height: 24px;
-            animation: spin 1s linear infinite;
+        :root {
+            --bg-color: #050505;
+            --bg-secondary: #0f0f0f;
+            --text-main: #ffffff;
+            --text-muted: #888888;
+            --accent-color: #d4af37; /* Dourado */
+            --accent-hover: #b5952f;
         }
 
-        @keyframes spin {
-            to {
-                transform: rotate(360deg);
-            }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Montserrat', sans-serif;
         }
-        /* New styles for star rating input */
-        .star-rating-input {
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Menu de Navegação */
+        nav {
+            position: fixed;
+            top: 0;
+            width: 100%;
+            background-color: rgba(5, 5, 5, 0.9);
+            backdrop-filter: blur(15px);
+            padding: 20px 8%;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #1a1a1a;
+            z-index: 1000;
+        }
+
+        .logo {
+            font-size: 1.6rem;
+            font-weight: 700;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+        }
+
+        .logo span { color: var(--accent-color); }
+
+        .nav-right {
+            display: flex;
+            align-items: center;
+            gap: 25px;
+        }
+
+        .lang-switch {
+            display: flex;
+            gap: 10px;
+        }
+
+        .lang-btn {
+            background: none;
+            border: 1px solid #333;
+            color: var(--text-muted);
+            padding: 5px 10px;
+            cursor: pointer;
+            font-size: 0.7rem;
+            transition: 0.3s;
+            border-radius: 2px;
+        }
+
+        .lang-btn.active {
+            border-color: var(--accent-color);
+            color: var(--accent-color);
+        }
+
+        .btn-whatsapp {
+            background-color: var(--accent-color);
+            color: #000;
+            padding: 12px 25px;
+            font-weight: 700;
+            text-transform: uppercase;
+            font-size: 0.8rem;
+            border-radius: 2px;
+            text-decoration: none;
+            transition: 0.3s;
+        }
+
+        .btn-whatsapp:hover {
+            background-color: var(--accent-hover);
+            transform: scale(1.05);
+        }
+
+        /* Hero Section */
+        .hero {
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+            padding: 0 10%;
+            background: radial-gradient(circle at center, #1a1a1a 0%, #050505 100%);
+        }
+
+        .hero h1 {
+            font-size: clamp(2.5rem, 8vw, 4.5rem);
+            font-weight: 300;
+            margin-bottom: 20px;
+            letter-spacing: -1px;
+        }
+
+        .hero h1 b { font-weight: 700; color: var(--accent-color); }
+
+        .hero p {
+            font-size: 1.1rem;
+            color: var(--text-muted);
+            max-width: 600px;
+            margin-bottom: 40px;
+        }
+
+        /* Seção de Clientes (Logos) */
+        .clients {
+            padding: 50px 8%;
+            background-color: #080808;
+            text-align: center;
+            border-bottom: 1px solid #1a1a1a;
+        }
+
+        .clients p {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 30px;
+        }
+
+        .clients-logos {
             display: flex;
             justify-content: center;
-            direction: rtl; /* Stars from right to left */
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 40px;
         }
-        .star-rating-input input[type="radio"] {
-            display: none; /* Hide radio buttons */
+
+        .client-logo {
+            max-height: 80px; 
+            opacity: 0.6;
+            filter: grayscale(100%);
+            transition: all 0.4s ease;
+            /* Configuração ideal para imagens PNG com fundo transparente */
         }
-        .star-rating-input label {
-            cursor: pointer;
-            width: 30px;
-            height: 30px;
-            color: #d1d5db; /* Default empty star color */
-            font-size: 28px;
-            transition: color 0.2s ease;
+
+        .client-logo:hover {
+            opacity: 1;
+            filter: grayscale(0%);
+            transform: scale(1.05);
         }
-        .star-rating-input label i {
-            pointer-events: none; /* Allows click to pass through to label */
+
+        /* Seção de Serviços */
+        .services {
+            padding: 100px 8%;
+            background-color: var(--bg-secondary);
         }
-        .star-rating-input input[type="radio"]:checked ~ label,
-        .star-rating-input label:hover,
-        .star-rating-input label:hover ~ label {
-            color: #FFD700; /* Gold color on hover and checked */
+
+        .section-header {
+            text-align: center;
+            margin-bottom: 60px;
         }
-        /* Ensure Font Awesome is loaded for stars */
-        .star-rating-input label i.fas { /* Already filled star */
-            color: #FFD700;
+
+        .section-header h2 {
+            font-size: 2rem;
+            text-transform: uppercase;
+            letter-spacing: 4px;
         }
-        .star-rating-input label i.far { /* Empty star */
-            color: #d1d5db;
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 30px;
+        }
+
+        .card {
+            background: #151515;
+            padding: 50px 30px;
+            border: 1px solid #222;
+            transition: 0.4s;
+            text-align: left;
+        }
+
+        .card:hover {
+            border-color: var(--accent-color);
+            transform: translateY(-5px);
+        }
+
+        .card h3 {
+            color: var(--accent-color);
+            margin-bottom: 15px;
+            font-size: 1.3rem;
+        }
+
+        .card p {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+            margin-bottom: 20px;
+        }
+
+        /* Footer */
+        footer {
+            padding: 80px 8% 40px;
+            text-align: center;
+            border-top: 1px solid #1a1a1a;
+        }
+
+        .footer-cta h2 { font-size: 2.5rem; margin-bottom: 20px; }
+
+        .copyright {
+            margin-top: 60px;
+            font-size: 0.7rem;
+            color: #444;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+        }
+
+        @media (max-width: 768px) {
+            nav { padding: 15px 5%; }
+            .nav-right .btn-whatsapp { display: none; }
         }
     </style>
 </head>
-<body class="bg-white text-gray-900">
-    <!-- Message Box for alerts -->
-    <div id="message-box" class="fixed top-20 right-4 p-4 rounded-md shadow-lg z-[1000] hidden"></div>
+<body>
 
-    <!-- Header -->
-    <header class="fixed w-full bg-white z-50 shadow-sm">
-        <div class="container mx-auto px-4 py-4 flex justify-between items-center">
-            <div class="flex items-center">
-                <!-- Removida a tag <img> para o logo, usando apenas o texto -->
-                <h1 class="text-2xl font-bold tracking-tighter">MV<span class="font-light">designer</span></h1>
+    <nav>
+        <div class="logo">MV <span>Studio</span></div>
+        <div class="nav-right">
+            <div class="lang-switch">
+                <button class="lang-btn active" onclick="setLanguage('pt')">PT</button>
+                <button class="lang-btn" onclick="setLanguage('en')">EN</button>
             </div>
-            <nav class="hidden md:flex space-x-8">
-                <a href="#home" class="nav-link font-medium">Home</a>
-                <a href="#services" class="nav-link font-medium">Serviços</a>
-                <a href="#portfolio" class-="nav-link font-medium">Portfólio</a>
-                <a href="#about" class="nav-link font-medium">Sobre</a>
-                <a href="#testimonials" class="nav-link font-medium">Feedbacks</a>
-                <a href="#contact" class="nav-link font-medium">Contato</a>
-            </nav>
-            <button id="mobile-menu-button" class="md:hidden focus:outline-none">
-                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path>
-                </svg>
-            </button>
+            <a href="https://wa.me/5511993975886?text=Olá!%20Gostaria%20de%20solicitar%20um%20orçamento%20de%20design." target="_blank" class="btn-whatsapp" id="nav-cta">Orçamento</a>
         </div>
-        <!-- Mobile Menu -->
-        <div id="mobile-menu" class="hidden md:hidden bg-white w-full border-t border-gray-200">
-            <div class="container mx-auto px-4 py-2 flex flex-col space-y-3">
-                <a href="#home" class="py-2 font-medium">Home</a>
-                <a href="#services" class="py-2 font-medium">Serviços</a>
-                <a href="#portfolio" class="py-2 font-medium">Portfólio</a>
-                <a href="#about" class="py-2 font-medium">Sobre</a>
-                <a href="#testimonials" class="py-2 font-medium">Feedbacks</a>
-                <a href="#contact" class="py-2 font-medium">Contato</a>
-            </div>
-        </div>
-    </header>
+    </nav>
 
-    <!-- Hero Section -->
-    <section id="home" class="pt-24 pb-16 md:pt-32 md:pb-24">
-        <div class="container mx-auto px-4">
-            <div class="flex flex-col md:flex-row items-center">
-                <div class="md:w-1/2 mb-8 md:mb-0">
-                    <h2 class="text-4xl md:text-5xl font-bold mb-4 leading-tight">Design que <br>transforma <span class="text-gray-600">ideias</span> em <span class="text-600">realidade</span></h2>
-                    <p class="text-lg text-gray-700 mb-8">Marketing, Design, Fotografia de produtos e criação de embalagens e catálogos profissionais.</p>
-                    <div class="flex space-x-4">
-                        <a href="#portfolio" class="px-6 py-3 bg-black text-white font-medium rounded-md hover:bg-gray-800 transition">Ver Portfólio</a>
-                        <a href="#contact" class="px-6 py-3 border border-black font-medium rounded-md hover:bg-gray-100 transition">Contato</a>
-                    </div>
-                </div>
-                <div class="md:w-1/2">
-                    <!-- Imagem para a seção Hero -->
-                    <img src="https://cdn.discordapp.com/attachments/1186109058458071077/1380220081895772282/3656.png?ex=6843159e&is=6841c41e&hm=fc5b5409d33ee79eeaec5f9f73e64ec5f80f86286770abbfdff1bdb615c510c9&" alt="Imagem do Herói" class="w-full h-auto rounded-lg shadow-lg" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=IMAGEM+HERO+NAO+CARREGADA';">
-                </div>
+    <section class="hero">
+        <h1 id="hero-title">Design que <b>converte</b> em vendas.</h1>
+        <p id="hero-desc">Elevamos o valor visual de marcas através de embalagens premium, fotografia de alta performance e experiências digitais memoráveis.</p>
+        <a href="https://wa.me/5511993975886" class="btn-whatsapp" id="hero-btn" style="padding: 18px 40px;">Iniciar Projeto</a>
+    </section>
+
+    <section class="clients">
+        <p id="clients-title">Marcas que confiam em nosso trabalho</p>
+        <div class="clients-logos">
+            <img src="https://via.placeholder.com/200x80/000000/d4af37?text=LOGO+TESTE" alt="Logo Teste" class="client-logo">
+        </div>
+    </section>
+
+    <section class="services">
+        <div class="section-header">
+            <h2 id="services-title">Nossas Especialidades</h2>
+        </div>
+        <div class="grid">
+            <div class="card">
+                <h3 id="s1-t">Embalagens</h3>
+                <p id="s1-d">Design estratégico focado na experiência de unboxing e diferenciação no ponto de venda.</p>
+            </div>
+            <div class="card">
+                <h3 id="s2-t">Fotografia</h3>
+                <p id="s2-d">Produção visual de produtos com iluminação e tratamento de alto padrão para catálogos.</p>
+            </div>
+            <div class="card">
+                <h3 id="s3-t">Catálogos</h3>
+                <p id="s3-d">Diagramação editorial de impacto para apresentar suas coleções de forma profissional.</p>
+            </div>
+            <div class="card">
+                <h3 id="s4-t">UX Design</h3>
+                <p id="s4-d">Criação de interfaces intuitivas focadas em usabilidade e conversão para o seu negócio.</p>
             </div>
         </div>
     </section>
 
-    <!-- Services Section -->
-    <section id="services" class="py-16 bg-gray-50">
-        <div class="container mx-auto px-4">
-            <div class="text-center mb-16">
-                <h2 class="text-3xl font-bold mb-4">Nossos Serviços</h2>
-                <p class="text-gray-600 max-w-2xl mx-auto">Oferecemos soluções completas de design para transformar sua marca e destacá-la no mercado.</p>
-            </div>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                <!-- Serviço 1: Design Gráfico -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <div class="mb-4 text-center">
-                        <i class="fas fa-palette text-gray-800 text-5xl"></i> <!-- Ícone de paleta para Design Gráfico -->
-                    </div>
-                    <h3 class="text-xl font-bold mb-3 text-center">Design Gráfico</h3>
-                    <p class="text-gray-600 text-center">Criação de identidade visual, logotipos, cartões de visita e materiais promocionais para sua marca.</p>
-                </div>
-
-                <!-- Serviço 2: Fotografia de Produtos -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <div class="mb-4 text-center">
-                        <i class="fas fa-camera-retro text-gray-800 text-5xl"></i> <!-- Ícone de câmera para Fotografia de Produtos -->
-                    </div>
-                    <h3 class="text-xl font-bold mb-3 text-center">Fotografia de Produtos</h3>
-                    <p class="text-gray-600 text-center">Fotografias profissionais que destacam os melhores aspectos dos seus produtos para e-commerce e catálogos.</p>
-                </div>
-
-                <!-- Serviço 3: Design de Embalagens -->
-                <div class="bg-white p-6 rounded-lg shadow-md">
-                    <div class="mb-4 text-center">
-                        <i class="fas fa-box-open text-gray-800 text-5xl"></i> <!-- Ícone de caixa aberta para Design de Embalagens -->
-                    </div>
-                    <h3 class="text-xl font-bold mb-3 text-center">Design de Embalagens</h3>
-                    <p class="text-gray-600 text-center">Criação de embalagens atrativas e funcionais que comunicam os valores da sua marca.</p>
-                </div>
-            </div>
+    <footer>
+        <div class="footer-cta">
+            <h2 id="footer-t">Vamos criar algo extraordinário?</h2>
+            <a href="https://wa.me/5511993975886" class="btn-whatsapp" id="footer-btn">Falar com Especialista</a>
         </div>
-    </section>
+        <p class="copyright">© 2026 MV STUDIO — DESIGN & STRATEGY</p>
+    </footer>
 
-    <!-- Portfolio Section -->
-    <section id="portfolio" class="py-16">
-        <div class="container mx-auto px-4">
-            <div class="text-center mb-16">
-                <h2 class="text-3xl font-bold mb-4">Portfólio</h2>
-                <p class="text-gray-600 max-w-2xl mx-auto">Conheça alguns dos nossos trabalhos recentes e veja como podemos ajudar a sua marca.</p>
-            </div>
+    <script>
+        const translations = {
+            pt: {
+                navCta: "Orçamento",
+                heroTitle: "Design que <b>converte</b> em vendas.",
+                heroDesc: "Elevamos o valor visual de marcas através de embalagens premium, fotografia de alta performance e experiências digitais memoráveis.",
+                heroBtn: "Iniciar Projeto",
+                clientsTitle: "Marcas que confiam em nosso trabalho",
+                servicesTitle: "Nossas Especialidades",
+                s1T: "Embalagens", s1D: "Design estratégico focado na experiência de unboxing e diferenciação no ponto de venda.",
+                s2T: "Fotografia", s2D: "Produção visual de produtos com iluminação e tratamento de alto padrão para catálogos.",
+                s3T: "Catálogos", s3D: "Diagramação editorial de impacto para apresentar suas coleções de forma profissional.",
+                s4T: "UX Design", s4D: "Criação de interfaces intuitivas focadas em usabilidade e conversão para o seu negócio.",
+                footerT: "Vamos criar algo extraordinário?",
+                footerBtn: "Falar com Especialista"
+            },
+            en: {
+                navCta: "Get a Quote",
+                heroTitle: "Design that <b>converts</b> into sales.",
+                heroDesc: "We elevate the visual value of brands through premium packaging, high-performance photography, and memorable digital experiences.",
+                heroBtn: "Start Project",
+                clientsTitle: "Brands that trust our work",
+                servicesTitle: "Our Specialties",
+                s1T: "Packaging", s1D: "Strategic design focused on unboxing experience and shelf-standout differentiation.",
+                s2T: "Photography", s2D: "High-end product visual production with professional lighting and retouching.",
+                s3T: "Catalogs", s3D: "Impactful editorial layout to showcase your collections professionally.",
+                s4T: "UX Design", s4D: "Creation of intuitive interfaces focused on usability and conversion for your business.",
+                footerT: "Let's create something extraordinary?",
+                footerBtn: "Talk to Specialist"
+            }
+        };
 
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                <!-- Projeto 1: Redesign de Marca -->
-                <div class="portfolio-item overflow-hidden rounded-lg shadow-md cursor-pointer" onclick="openModal('projeto1')">
-                    <img src="https://www.chiefofdesign.com.br/wp-content/uploads/2020/01/shutterstock_530963695.png" alt="Redesign de Marca" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=IMAGEM+NAO+CARREGADA';">
-                    <div class="p-4">
-                        <h3 class="font-bold text-lg mb-1">Redesign de Marca</h3>
-                        <p class="text-gray-600">Identidade Visual</p>
-                    </div>
-                </div>
+        function setLanguage(lang) {
+            // Atualiza botões
+            document.querySelectorAll('.lang-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
 
-                <!-- Projeto 2: Catálogo de Produtos -->
-                <div class="portfolio-item overflow-hidden rounded-lg shadow-md cursor-pointer" onclick="openModal('projeto2')">
-                    <img src="https://aprdesigners.com.br/wp-content/uploads/photo-gallery/catalogos/criacao-de-catalogo-de-autopecas-iguacu.jpg?bwg=1540586308" alt="Catálogo de Produtos" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=CATALOGO+NAO+CARREGADA';">
-                    <div class="p-4">
-                        <h3 class="font-bold text-lg mb-1">Catálogo de Produtos</h3>
-                        <p class="text-gray-600">Design Editorial</p>
-                    </div>
-                </div>
-
-                <!-- Projeto 3: Embalagem Premium -->
-                <div class="portfolio-item overflow-hidden rounded-lg shadow-md cursor-pointer" onclick="openModal('projeto3')">
-                    <img src="https://ptcgs.com.br/wp-content/uploads/2023/01/embalagens-1080x675.jpg" alt="Embalagem Premium" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=EMBALAGEM+NAO+CARREGADA';">
-                    <div class="p-4">
-                        <h3 class="font-bold text-lg mb-1">Embalagem Premium</h3>
-                        <p class="text-gray-600">Design de Embalagem</p>
-                    </div>
-                </div>
-            </div>
-
-            <div class="text-center mt-10">
-                <a href="#contact" class="px-6 py-3 bg-black text-white font-medium rounded-md hover:bg-gray-800 transition">Solicite um Orçamento</a>
-            </div>
-        </div>
-    </section>
-
-    <!-- About Section -->
-    <section id="about" class="py-16 bg-gray-50">
-        <div class="container mx-auto px-4">
-            <div class="flex flex-col md:flex-row items-center">
-                <div class="md:w-1/2 mb-8 md:mb-0 md:pr-8">
-                    <!-- Imagem para a seção Sobre -->
-                    <img src="https://cdn.discordapp.com/attachments/1186109058458071077/1380216951686828093/Imagem_do_WhatsApp_de_2025-06-04_as_21.43.20_dbe9b3ee.jpg?ex=684312b4&is=6841c134&hm=e69ac04acd1e15b08f107d25b204135744ed85fbb47e6216c5660b71aaba6dd6&" alt="Imagem sobre" class="w-full h-auto rounded-lg shadow-lg" onerror="this.onerror=null;this.src='https://placehold.co/600x400/cccccc/000000?text=IMAGEM+SOBRE+NAO+CARREGADA';">
-                </div>
-                <div class="md:w-1/2">
-                    <h2 class="text-3xl font-bold mb-6">Sobre MVdesigner</h2>
-                    <p class="text-gray-700 mb-4">Sou um profissional apaixonado por design e marketing, com experiência em criar soluções visuais impactantes que ajudam marcas a se destacarem no mercado.</p>
-                    <p class="text-gray-700 mb-6">Minha abordagem combina criatividade com estratégia, garantindo que cada projeto não apenas pareça incrível, mas também atinja os objetivos de negócio dos meus clientes.</p>
-                    <div class="flex space-x-4">
-                        <a href="https://www.instagram.com/mvital_designer/following/" target="_blank" class="text-2xl text-gray-700 hover:text-gray-900"><i class="fab fa-instagram"></i></a>
-                        <a href="https://www.behance.net/vDvital" target="_blank" class="text-2xl text-gray-700 hover:text-gray-900"><i class="fab fa-behance"></i></a>
-                        <a href="https://www.linkedin.com/in/marcos-vital-terto-64143b218/" target="_blank" class="text-2xl text-gray-700 hover:text-gray-900"><i class="fab fa-linkedin"></i></a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Testimonials Section -->
-    <section id="testimonials" class="py-16">
-        <div class="container mx-auto px-4">
-            <div class="text-center mb-16">
-                <h2 class="text-3xl font-bold mb-4">O que nossos clientes dizem</h2>
-                <p class="text-gray-600 max-w-2xl mx-auto">Confira alguns depoimentos de clientes satisfeitos com nosso trabalho.</p>
-            </div>
-
-            <!-- Feedbacks List - Populated by JavaScript from Firestore -->
-            <div id="feedbacks-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-                <!-- Initial loading state -->
-                <p class="text-center text-gray-500 col-span-full">A carregar feedbacks...</p>
-                <!-- Feedbacks will be dynamically added here -->
-            </div>
-
-            <!-- Feedback Submission Form -->
-            <div class="text-center mt-20 p-8 bg-gray-100 rounded-lg shadow-inner max-w-2xl mx-auto">
-                <h3 class="text-2xl font-bold mb-4">Deixe seu Feedback!</h3>
-                <p class="text-gray-700 mb-6">Sua opinião é muito importante para nós. Compartilhe sua experiência!</p>
-                <form id="feedback-form" class="space-y-4 text-left">
-                    <div>
-                        <label for="feedback_name" class="block text-sm font-medium text-gray-700 mb-1">Seu Nome:</label>
-                        <input type="text" id="feedback_name" name="name" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-500" required>
-                    </div>
-                    <div>
-                        <label for="feedback_email" class="block text-sm font-medium text-gray-700 mb-1">Seu Email:</label>
-                        <input type="email" id="feedback_email" name="email" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-500" required>
-                    </div>
-
-                    <!-- Seleção de Estrelas -->
-                    <div class="mb-4">
-                        <label class="block text-sm font-medium text-gray-700 mb-2 text-center">Sua Avaliação:</label>
-                        <div class="star-rating-input">
-                            <!-- Removido o atributo 'required' de todos os inputs de rádio -->
-                            <input type="radio" id="star5" name="rating" value="5">
-                            <label for="star5" data-value="5"><i class="fas fa-star"></i></label>
-                            <input type="radio" id="star4" name="rating" value="4">
-                            <label for="star4" data-value="4"><i class="fas fa-star"></i></label>
-                            <input type="radio" id="star3" name="rating" value="3">
-                            <label for="star3" data-value="3"><i class="fas fa-star"></i></label>
-                            <input type="radio" id="star2" name="rating" value="2">
-                            <label for="star2" data-value="2"><i class="fas fa-star"></i></label>
-                            <input type="radio" id="star1" name="rating" value="1">
-                            <label for="star1" data-value="1"><i class="fas fa-star"></i></label>
-                        </div>
-                    </div>
-
-                    <div>
-                        <label for="feedback_message" class="block text-sm font-medium text-gray-700 mb-1">Seu Comentário:</label>
-                        <textarea id="feedback_message" name="message" rows="4" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-gray-500" required></textarea>
-                    </div>
-                    <div>
-                        <button type="submit" class="w-full px-6 py-3 bg-black text-white font-medium rounded-md hover:bg-gray-800 transition flex items-center justify-center space-x-2">
-                            <span id="feedback-button-text">Enviar Feedback</span>
-                            <div id="feedback-spinner" class="spinner hidden"></div>
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    </section>
-
-    <!-- Contact Section -->
-    <section id="contact" class="py-16">
-        <div class="container mx-auto px-4">
-            <div class="text-center mb-16">
-                <h2 class="text-3xl font-bold mb-4">Entre em Contato</h2>
-                <p class="text-gray-600 max-w-2xl mx-auto">Vamos conversar sobre o seu projeto e como podemos ajudar a transformar suas ideias em realidade.</p>
-            </div>
-
-            <div class="max-w-4xl mx-auto">
-                <div class="flex flex-col md:flex-row bg-white rounded-lg shadow-lg overflow-hidden">
-                    <div class="md:w-1/3 bg-gray-900 text-white p-8">
-                        <h3 class="text-xl font-bold mb-6">Informações de Contato</h3>
-                        <div class="mb-6">
-                            <p class="flex items-center mb-3">
-                                <i class="fas fa-map-marker-alt mr-3"></i>
-                                São Paulo - SP
-                            </p>
-                            <p class="flex items-center mb-3">
-                                <i class="fas fa-envelope mr-3"></i>
-                                marcos.vital2008@outlook.com
-                            </p>
-                            <p class="flex items-center">
-                                <i class="fas fa-phone mr-3"></i>
-                                (11) 99397-5886
-                            </p>
-                        </div>
-                        <div class="flex space-x-4 mt-8">
-                            <a href="https://www.instagram.com/mvital_designer/following/" target="_blank" class="text-white hover:text-gray-300"><i class="fab fa-instagram"></i></a>
-                            <a href="https://www.behance.net/vDvital" target="_blank" class="text-white hover:text-gray-300"><i class="fab fa-behance"></i></a>
-                            <a href="https://www.linkedin.com/in/marcos-vital-terto-64143b218/" target="_blank" class="text-white hover:text-gray-300"><i class="fab fa-linkedin"></i></a>
-                        </div>
-                    </div>
-                    <div class="md:w-2/3 p-8 flex flex-col justify-center items-center text-center">
-                        <p class="text-gray-700 mb-6 text-lg">Para um contato rápido, clique no botão abaixo para nos enviar uma mensagem via WhatsApp:</p>
-                        <a href="https://wa.me/5511993975886?text=Ol%C3%A1%2C%20gostaria%20de%20conversar%20sobre%20um%20projeto." target="_blank" class="px-8 py-4 bg-green-500 text-white font-medium rounded-full shadow-lg hover:bg-green-600 transition flex items-center justify-center space-x-3 text-lg">
-                            <i class="fab fa-whatsapp text-2xl"></i>
-                            <span>Enviar Mensagem via WhatsApp</span>
-                        </a>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Footer -->
-    <footer class="bg-gray-900 text-white py-12">
-        <div class="container mx-auto px-4">
-            <div class="flex flex-col md:flex-row justify-between">
-                <div class="mb-8 md:mb-0">
-                    <h3 class="text-2xl font-bold mb-4">MV<span class="font-light">designer</span></h3>
-                    <p class="text-gray-400 max-w-xs">Transformando ideias em designs memoráveis desde 2018.</p>
-                </div>
-                <div class="grid grid-cols-2 md:grid-cols-3 gap-8">
-                    <div>
-                        <h4 class="text-lg font-semibold mb-4">Links Rápidos</h4>
-                        <ul class="space-y-2">
-                            <li><a href="#home" class="text-gray-400 hover:text-white transition">Home</a></li>
-                            <li><a href="#services" class="text-gray-400 hover:text-white transition">Serviços</a></li>
-                            <li><a href="#portfolio" class-="nav-link font-medium">Portfólio</a></li>
-                            <li><a href="#about" class="text-gray-400 hover:text-white transition">Sobre</a></li>
-                            <li><a href="#testimonials" class="text-gray-400 hover:text-white transition">Feedbacks</a></li>
-                            <li><a href="#contact" class="text-gray-400 hover:text-white transition">Contato</a></li>
-                        </ul>
-                    </div>
-                    <div>
-                        <h4 class="text-lg font-semibold mb-4">Serviços</h4>
-                        <ul class="space-y-2">
-                            <li><a href="#" class="text-gray-400 hover:text-white transition">Design Gráfico</a></li>
-                            <li><a href="#" class="text-gray-400 hover:text-white transition">Identidade Visual</a></li>
-                            <li><a href="#" class="text-gray-400 hover:text-white transition">Fotografia</a></li>
-                            <li><a href="#" class="text-gray-400 hover:text-white transition">Embalagens</a></li>
-                            <li><a href="#" class="text-gray-400 hover:text-white transition">Catálogos</a></li>
-                        </ul>
-                    </div>
-                    <div>
-                        <h4 class="text-lg font-semibold mb-4">Contato</h4>
-                        <ul class="space-y-2">
-                            <li class="text-gray-400">marcos.vital2008@outlook.com</li>
-                            <li class="text-gray-400">(11) 99397-5886 (WhatsApp)</li>
-                            <li class="flex space-x-4 mt-4">
-                                <a href="https://www.instagram.com/mvital_designer/following/" target="_blank" class="text-gray-400 hover:text-white transition"><i class="fab fa-instagram"></i></a>
-                                <a href="https://www.behance.net/vDvital" target="_blank" class="text-gray-400 hover:text-white transition"><i class="fab fa-behance"></i></a>
-                                <a href="https://www.linkedin.com/in/marcos-vital-terto-64143b218/" target="_blank" class="text-gray-400 hover:text-white transition"><i class="fab fa-linkedin"></i></a>
-                            </li>
-                        </ul>
-                    </div>
-                </div>
-            </div>
-            <div class="border-t border-gray-800 mt-12 pt-8 text-center text-gray-400">
-                <p>&copy; 2023 MVdesigner. Todos os direitos reservados.</p>
-            </div>
-        </div>
-    </section>
-
-    <!-- Portfolio Modals -->
-    <div id="modal-projeto1" class="modal fixed inset-0 z-50 flex items-center justify-center hidden">
-        <div class="modal-overlay absolute inset-0 bg-black opacity-75"></div>
-        <div class="modal-container bg-white w-11/12 md:max-w-3xl mx-auto rounded-lg shadow-lg z-50 overflow-y-auto">
-            <div class="modal-content p-6">
-                <div class="flex justify-between items-center mb-6">
-                    <h3 class="text-2xl font-bold" id="projeto1-title">Redesign de Marca</h3>
-                    <button class="modal-close focus:outline-none">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
-                </div>
-                <!-- Imagem grande para o Projeto 1: Redesign de Marca -->
-                <img src="https://www.chiefofdesign.com.br/wp-content/uploads/2020/01/shutterstock_530963695.png" alt="Redesign de Marca" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/800x600/cccccc/000000?text=IMAGEM+NAO+CARREGADA';">
-
-                <p class="text-gray-700 mb-4">Complete redesign of the visual identity for XYZ company, including logo, color palette, typography and application in various materials.</p>
-                <p class="text-700 mb-4">The goal was to modernize the brand while maintaining its essence and values, creating a more versatile identity adaptable to different digital media.</p>
-                <div class="mt-6">
-                    <h4 class="font-bold mb-2">Services performed:</h4>
-                    <ul class="list-disc pl-5 text-gray-700">
-                        <li>Logo redesign</li>
-                        <li>Visual identity manual</li>
-                        <li>Corporate stationery</li>
-                        <li>Social media templates</li>
-                    </ul>
-                </div>
-                <!-- Gemini API Integration: Project Description Generator -->
-                <div class="mt-8 pt-6 border-t border-gray-200">
-                    <h4 class="font-bold text-xl mb-4">Gerador de Descrição de Projeto ✨</h4>
-                    <button id="generate-desc-projeto1" class="px-6 py-3 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 transition flex items-center justify-center space-x-2">
-                        <span id="generate-desc-text-projeto1">Gerar Descrição</span>
-                        <div id="generate-desc-spinner-projeto1" class="spinner hidden"></div>
-                    </button>
-                    <textarea id="generated-description-projeto1" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mt-4 h-32" placeholder="A descrição gerada pela IA aparecerá aqui..." readonly></textarea>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="modal-projeto2" class="modal fixed inset-0 z-50 flex items-center justify-center hidden">
-        <div class="modal-overlay absolute inset-0 bg-black opacity-75"></div>
-        <div class="modal-container bg-white w-11/12 md:max-w-3xl mx-auto rounded-lg shadow-lg z-50 overflow-y-auto">
-            <div class="modal-content p-6">
-                <div class="flex justify-between items-center mb-6">
-                    <h3 class="text-2xl font-bold" id="projeto2-title">Catálogo de Produtos</h3>
-                    <button class="modal-close focus:outline-none">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
-                </div>
-                <!-- Imagem grande para o Projeto 2: Catálogo de Produtos -->
-                <img src="https://aprdesigners.com.br/wp-content/uploads/photo-gallery/catalogos/criacao-de-catalogo-de-autopecas-iguacu.jpg?bwg=1540586308" alt="Catálogo de Produtos" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/800x600/cccccc/000000?text=CATALOGO+NAO+CARREGADA';">
-
-                <p class="text-gray-700 mb-4">Development of product catalog for ABC company, with professional photography, layout and complete editorial design.</p>
-                <p class="text-gray-700 mb-4">The catalog was created to highlight products elegantly and informatively, facilitating consultation by customers and sales representatives.</p>
-                <div class="mt-6">
-                    <h4 class="font-bold mb-2">Services performed:</h4>
-                    <ul class="list-disc pl-5 text-gray-700">
-                        <li>Product photography</li>
-                        <li>Layout</li>
-                        <li>Editorial design</li>
-                        <li>Preparation for printing</li>
-                    </ul>
-                </div>
-                <!-- Gemini API Integration: Project Description Generator -->
-                <div class="mt-8 pt-6 border-t border-gray-200">
-                    <h4 class="font-bold text-xl mb-4">Gerador de Descrição de Projeto ✨</h4>
-                    <button id="generate-desc-projeto2" class="px-6 py-3 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 transition flex items-center justify-center space-x-2">
-                        <span id="generate-desc-text-projeto2">Gerar Descrição</span>
-                        <div id="generate-desc-spinner-projeto2" class="spinner hidden"></div>
-                    </button>
-                    <textarea id="generated-description-projeto2" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mt-4 h-32" placeholder="A descrição gerada pela IA aparecerá aqui..." readonly></textarea>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div id="modal-projeto3" class="modal fixed inset-0 z-50 flex items-center justify-center hidden">
-        <div class="modal-overlay absolute inset-0 bg-black opacity-75"></div>
-        <div class="modal-container bg-white w-11/12 md:max-w-3xl mx-auto rounded-lg shadow-lg z-50 overflow-y-auto">
-            <div class="modal-content p-6">
-                <div class="flex justify-between items-center mb-6">
-                    <h3 class="text-2xl font-bold" id="projeto3-title">Embalagem Premium</h3>
-                    <button class="modal-close focus:outline-none">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-                        </svg>
-                    </button>
-                </div>
-                <!-- Imagem grande para o Projeto 3: Embalagem Premium -->
-                <img src="https://ptcgs.com.br/wp-content/uploads/2023/01/embalagens-1080x675.jpg" alt="Embalagem Premium" class="w-full h-64 object-cover" onerror="this.onerror=null;this.src='https://placehold.co/800x600/cccccc/000000?text=IMAGEM+NAO+CARREGADA';">
-
-                <p class="text-gray-700 mb-4">Creation of premium packaging for DEF company's gourmet product line, with exclusive design and special finishes.</p>
-                <p class="text-gray-700 mb-4">The project included concept development, structural and graphic design, with a focus on conveying sophistication and superior quality.</p>
-                <div class="mt-6">
-                    <h4 class="font-bold mb-2">Services performed:</h4>
-                    <ul class="list-disc pl-5 text-gray-700">
-                        <li>Structural design</li>
-                        <li>Graphic design</li>
-                        <li>3D mockups</li>
-                        <li>Production monitoring</li>
-                    </ul>
-                </div>
-                <!-- Gemini API Integration: Project Description Generator -->
-                <div class="mt-8 pt-6 border-t border-gray-200">
-                    <h4 class="font-bold text-xl mb-4">Gerador de Descrição de Projeto ✨</h4>
-                    <button id="generate-desc-projeto3" class="px-6 py-3 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 transition flex items-center justify-center space-x-2">
-                        <span id="generate-desc-text-projeto3">Gerar Descrição</span>
-                        <div id="generate-desc-spinner-projeto3" class="spinner hidden"></div>
-                    </button>
-                    <textarea id="generated-description-projeto3" class="w-full px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 mt-4 h-32" placeholder="A descrição gerada pela IA aparecerá aqui..." readonly></textarea>
-                </div>
-            </div>
-        </div>
-    </div>
+            // Troca textos
+            document.getElementById('nav-cta').innerText = translations[lang].navCta;
+            document.getElementById('hero-title').innerHTML = translations[lang].heroTitle;
+            document.getElementById('hero-desc').innerText = translations[lang].heroDesc;
+            document.getElementById('hero-btn').innerText = translations[lang].heroBtn;
+            document.getElementById('clients-title').innerText = translations[lang].clientsTitle;
+            document.getElementById('services-title').innerText = translations[lang].servicesTitle;
+            document.getElementById('s1-t').innerText = translations[lang].s1T;
+            document.getElementById('s1-d').innerText = translations[lang].s1D;
+            document.getElementById('s2-t').innerText = translations[lang].s2T;
+            document.getElementById('s2-d').innerText = translations[lang].s2D;
+            document.getElementById('s3-t').innerText = translations[lang].s3T;
+            document.getElementById('s3-d').innerText = translations[lang].s3D;
+            document.getElementById('s4-t').innerText = translations[lang].s4T;
+            document.getElementById('s4-d').innerText = translations[lang].s4D;
+            document.getElementById('footer-t').innerText = translations[lang].footerT;
+            document.getElementById('footer-btn').innerText = translations[lang].footerBtn;
+        }
+    </script>
 </body>
 </html>
